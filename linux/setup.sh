@@ -216,16 +216,16 @@ phase_finalize() {
 
   if (( MOD_EGRESS )); then
     step "泄露测试"
-    wsl-egress leaktest || warn "泄露测试未全部通过，请查看上方输出"
+    wslb-agent leaktest || warn "泄露测试未全部通过，请查看上方输出"
   fi
 
   printf '\n%s安装完成%s\n' "$C_G$C_B" "$C_N"
   if (( MOD_EGRESS )); then
     printf '%s\n' \
-      "  wsl-egress status            出口 防火墙 黑洞状态" \
-      "  wsl-egress check             出口 IP 与时区" \
-      "  sudo wsl-egress set-node     更换节点" \
-      "  sudo wsl-egress identity set 改时区 语言" \
+      "  wslb-agent status            出口 防火墙 黑洞状态" \
+      "  wslb-agent check             出口 IP 与时区" \
+      "  sudo wslb-agent set-node     更换节点" \
+      "  sudo wslb-agent identity set 改时区 语言" \
       "  本地代理 127.0.0.1:41080 (SOCKS5/HTTP)"
   fi
   (( MOD_FIREFOX )) && echo "  firefox [url] / firefox -P <名字>   启动 Firefox（新开终端后生效）"

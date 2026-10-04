@@ -128,7 +128,7 @@ pub fn apply(gpa: Allocator, io: Io, root: []const u8, id: Config.Identity) !voi
     }
 
     var profile: std.Io.Writer.Allocating = .init(a);
-    try profile.writer.writeAll("# wsl-egress identity 由 wsl-egress identity apply 生成\n");
+    try profile.writer.writeAll("# wslb-agent identity 由 wslb-agent identity apply 生成\n");
     if (plan.timezone) |tz| {
         try profile.writer.print("export TZ={s}\n", .{tz});
     }
@@ -137,7 +137,7 @@ pub fn apply(gpa: Allocator, io: Io, root: []const u8, id: Config.Identity) !voi
     }
     // 流量已走 TUN 代理变量会让 Node 报 UnsupportedProxyProtocol
     try profile.writer.writeAll("unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY no_proxy NO_PROXY\n");
-    try w.write("/etc/profile.d/wsl-egress-identity.sh", profile.written());
+    try w.write("/etc/profile.d/wslb-identity.sh", profile.written());
 
     var manager: std.Io.Writer.Allocating = .init(a);
     try manager.writer.writeAll("[Manager]\nDefaultEnvironment=");
@@ -149,20 +149,20 @@ pub fn apply(gpa: Allocator, io: Io, root: []const u8, id: Config.Identity) !voi
     }
     try manager.writer.writeAll("\n");
     if (plan.timezone != null or plan.locale != null) {
-        try w.write("/etc/systemd/system.conf.d/wsl-egress-identity.conf", manager.written());
-        try w.write("/etc/systemd/user.conf.d/wsl-egress-identity.conf", manager.written());
+        try w.write("/etc/systemd/system.conf.d/wslb-identity.conf", manager.written());
+        try w.write("/etc/systemd/user.conf.d/wslb-identity.conf", manager.written());
     } else {
-        w.remove("/etc/systemd/system.conf.d/wsl-egress-identity.conf");
-        w.remove("/etc/systemd/user.conf.d/wsl-egress-identity.conf");
+        w.remove("/etc/systemd/system.conf.d/wslb-identity.conf");
+        w.remove("/etc/systemd/user.conf.d/wslb-identity.conf");
     }
 
     var ff_buf: [512]u8 = undefined;
     if (tag == null) {
-        w.remove(firefox_pref_dir ++ "/wsl-egress-identity.js");
+        w.remove(firefox_pref_dir ++ "/wslb-identity.js");
     } else if (fsx.exists(io, w.path(&ff_buf, firefox_pref_dir))) {
         const t = tag.?;
-        try w.write(firefox_pref_dir ++ "/wsl-egress-identity.js", try a.print(
-            \\// wsl-egress identity 由 wsl-egress identity apply 生成
+        try w.write(firefox_pref_dir ++ "/wslb-identity.js", try a.print(
+            \\// wslb-agent identity 由 wslb-agent identity apply 生成
             \\pref("intl.accept_languages", "{s}, {s}");
             \\pref("intl.locale.requested", "{s}");
             \\pref("intl.regional_prefs.use_os_locales", false);
@@ -173,9 +173,9 @@ pub fn apply(gpa: Allocator, io: Io, root: []const u8, id: Config.Identity) !voi
     var chrony_buf: [512]u8 = undefined;
     if (fsx.exists(io, w.path(&chrony_buf, "/etc/chrony"))) {
         if (plan.ntp) {
-            try w.write("/etc/chrony/sources.d/wsl-egress.sources", "server " ++ ntp_server ++ " iburst nts\n");
+            try w.write("/etc/chrony/sources.d/wslb-agent.sources", "server " ++ ntp_server ++ " iburst nts\n");
         } else {
-            w.remove("/etc/chrony/sources.d/wsl-egress.sources");
+            w.remove("/etc/chrony/sources.d/wslb-agent.sources");
         }
     }
 
@@ -192,7 +192,7 @@ pub fn apply(gpa: Allocator, io: Io, root: []const u8, id: Config.Identity) !voi
 fn setLocaltime(w: Writer, a: Allocator, tz: []const u8) !void {
     var buf: [512]u8 = undefined;
     const link = w.path(&buf, "/etc/localtime");
-    const tmp = try a.print("{s}.wsl-egress", .{link});
+    const tmp = try a.print("{s}.wslb-agent", .{link});
     Io.Dir.cwd().deleteFile(w.io, tmp) catch {};
     try Io.Dir.cwd().symLink(w.io, try a.print("/usr/share/zoneinfo/{s}", .{tz}), tmp, .{});
     try Io.Dir.renameAbsolute(tmp, link, w.io);

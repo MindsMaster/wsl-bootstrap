@@ -288,7 +288,7 @@ function Main {
   Write-Host '  ╚══════════════════════════════════════════════════════╝' -ForegroundColor Cyan
 
   if (-not (Test-Path (Join-Path $LinuxDir 'setup.sh'))) { Fail "找不到 $LinuxDir\setup.sh，请在完整的项目目录中运行" }
-  if (-not (Test-Path (Join-Path $LinuxDir 'bin\wsl-egress'))) { Fail "缺少 linux\bin\wsl-egress。先在 WSL 中于项目根目录运行: zig build -Drelease=true -p linux" }
+  if (-not (Test-Path (Join-Path $LinuxDir 'bin\wslb-agent'))) { Fail "缺少 linux\bin\wslb-agent。先在 WSL 中于项目根目录运行: zig build -Drelease=true -p linux" }
 
   $build = [Environment]::OSVersion.Version.Build
   $mirrored = $build -ge 22621

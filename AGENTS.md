@@ -76,8 +76,8 @@ bash 和 PowerShell 用 `#`，规则相同。
 
 # 验证
 
-- 改 Zig 代码后至少 `zig build` 和 `zig build test`。仓库在 Windows 盘上时 Zig 无法在 virtiofs 里重命名缓存目录，需设 `ZIG_LOCAL_CACHE_DIR=$HOME/.cache/zig-local/wsl-egress`
-- 发布用二进制：`zig build -Drelease=true -p linux`，输出 `linux/bin/wsl-egress` 供安装器使用
+- 改 Zig 代码后至少 `zig build` 和 `zig build test`。仓库在 Windows 盘上时 Zig 无法在 virtiofs 里重命名缓存目录，需设 `ZIG_LOCAL_CACHE_DIR=$HOME/.cache/zig-local/wslb`
+- 发布用二进制：`zig build -Drelease=true -p linux`，输出 `linux/bin/wslb-agent` 供安装器使用
 - 改到路由、防火墙、kill-switch 时跑 `tests/netns.sh`。它在 `unshare -rn` 隔离的网络命名空间里运行，不碰宿主网络
 - 不在宿主网络命名空间里启动守护进程或加载规则。所有 WSL 发行版共享同一网络栈
 - 失败先在改动前的基线上复现一次，分清是否本次引入

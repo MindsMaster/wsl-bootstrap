@@ -1,6 +1,6 @@
 const std = @import("std");
 const fsx = @import("fsx.zig");
-const ip4 = @import("ip4.zig");
+const ip4 = @import("net/ip4.zig");
 
 const Config = @This();
 const Allocator = std.mem.Allocator;
@@ -22,7 +22,7 @@ exclude_ifaces: []const []const u8 = &.{ "docker*", "br-*", "veth*", "zt*", "tai
 local_cidrs: []const []const u8 = &.{ "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16" },
 remote_dns: []const u8 = "8.8.8.8",
 mixed_port: u16 = 41080,
-singbox: []const u8 = "/usr/local/lib/wsl-egress/sing-box",
+singbox: []const u8 = "/usr/local/lib/wslb/sing-box",
 identity: Identity = .{},
 
 pub const Paths = struct {
@@ -33,9 +33,9 @@ pub const Paths = struct {
 
     pub fn fromEnv(env: *const std.process.Environ.Map) Paths {
         return .{
-            .etc = env.get("WSL_EGRESS_ETC") orelse "/etc/wsl-egress",
-            .run = env.get("WSL_EGRESS_RUN") orelse "/run/wsl-egress",
-            .root = env.get("WSL_EGRESS_ROOT") orelse "",
+            .etc = env.get("WSLB_ETC") orelse "/etc/wslb",
+            .run = env.get("WSLB_RUN") orelse "/run/wslb",
+            .root = env.get("WSLB_ROOT") orelse "",
         };
     }
 

@@ -2,17 +2,17 @@ const std = @import("std");
 const linux = std.os.linux;
 const build_options = @import("build_options");
 const Config = @import("Config.zig");
-const Guard = @import("Guard.zig");
-const Node = @import("Node.zig");
-const exit_info = @import("exit_info.zig");
-const firewall = @import("firewall.zig");
+const Guard = @import("net/Guard.zig");
+const Node = @import("net/Node.zig");
+const exit_info = @import("net/exit_info.zig");
+const firewall = @import("net/firewall.zig");
 const fsx = @import("fsx.zig");
 const identity = @import("identity.zig");
-const ip4 = @import("ip4.zig");
-const lan = @import("lan.zig");
-const netlink = @import("netlink.zig");
-const probe = @import("probe.zig");
-const singbox = @import("singbox.zig");
+const ip4 = @import("net/ip4.zig");
+const lan = @import("net/lan.zig");
+const netlink = @import("net/netlink.zig");
+const probe = @import("net/probe.zig");
+const singbox = @import("net/singbox.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -51,7 +51,7 @@ const Cli = struct {
     }
 
     fn fail(c: *Cli, comptime fmt: []const u8, args: anytype) Exit {
-        c.err.print("wsl-egress: " ++ fmt ++ "\n", args) catch {};
+        c.err.print("wslb-agent: " ++ fmt ++ "\n", args) catch {};
         return .failed;
     }
 
@@ -67,7 +67,7 @@ const Cli = struct {
         if (linux.geteuid() == 0) {
             return true;
         }
-        c.err.writeAll("wsl-egress: 需要 root 权限 请用 sudo 运行\n") catch {};
+        c.err.writeAll("wslb-agent: 需要 root 权限 请用 sudo 运行\n") catch {};
         return false;
     }
 
@@ -86,9 +86,9 @@ const Cli = struct {
 };
 
 const usage =
-    \\wsl-egress — WSL 出口代理与黑洞 kill-switch
+    \\wslb-agent — WSL 出口代理与黑洞 kill-switch
     \\
-    \\用法: wsl-egress <命令> [参数]
+    \\用法: wslb-agent <命令> [参数]
     \\
     \\查看
     \\  status [--json]              服务 路由 防火墙 节点概况
@@ -106,7 +106,7 @@ const usage =
     \\  disable --yes                移除防火墙与黑洞 网络将直连 慎用
     \\
     \\服务内部
-    \\  daemon                       由 wsl-egress.service 运行
+    \\  daemon                       由 wslb-guard.service 运行
     \\  firewall-up                  开机早期加载防火墙与黑洞
     \\
     \\  version | help
@@ -117,7 +117,7 @@ const usage =
 ;
 
 const identity_usage =
-    \\wsl-egress identity — 时区 语言 对时
+    \\wslb-agent identity — 时区 语言 对时
     \\
     \\  identity show
     \\  identity set [--timezone-mode auto|fixed|windows] [--timezone Area/City]
@@ -148,7 +148,7 @@ pub fn main(init: std.process.Init) !u8 {
         .color = std.Io.File.stdout().isTty(init.io) catch false,
     };
     const code = dispatch(&cli, args[1..]) catch |err| blk: {
-        cli.err.print("wsl-egress: {s}\n", .{@errorName(err)}) catch {};
+        cli.err.print("wslb-agent: {s}\n", .{@errorName(err)}) catch {};
         break :blk Exit.failed;
     };
     cli.out.flush() catch {};
@@ -191,7 +191,7 @@ fn dispatch(c: *Cli, args: []const [:0]const u8) !Exit {
         return .ok;
     }
     if (std.mem.eql(u8, cmd, "version") or std.mem.eql(u8, cmd, "--version")) {
-        try c.out.print("wsl-egress {s}\n", .{build_options.version});
+        try c.out.print("wslb-agent {s}\n", .{build_options.version});
         return .ok;
     }
     if (std.mem.eql(u8, cmd, "daemon")) {
@@ -229,7 +229,7 @@ fn dispatch(c: *Cli, args: []const [:0]const u8) !Exit {
     if (std.mem.eql(u8, cmd, "disable")) {
         return cmdDisable(c, rest);
     }
-    try c.err.print("wsl-egress: 未知命令 {s}\n\n", .{cmd});
+    try c.err.print("wslb-agent: 未知命令 {s}\n\n", .{cmd});
     try c.err.writeAll(usage);
     return .usage;
 }
@@ -271,7 +271,7 @@ fn cmdStatus(c: *Cli) !Exit {
         }
     }
     const tun_up = snap.linkByName(singbox.tun_if) != null;
-    const daemon = systemctl(c, &.{ "is-active", "-q", "wsl-egress.service" });
+    const daemon = systemctl(c, &.{ "is-active", "-q", "wslb-guard.service" });
     const legacy = blk: {
         for (lan.legacy_ifs) |name| {
             if (snap.linkByName(name) != null) {
@@ -302,7 +302,7 @@ fn cmdStatus(c: *Cli) !Exit {
     if (node) |n| {
         try c.out.print("节点  {s}  {s} → {s}:{d}  {s}/{s}\n", .{ n.name, n.host, n.ip, n.port, @tagName(n.security), @tagName(n.transport) });
     } else {
-        try c.out.writeAll("节点  未配置  sudo wsl-egress set-node\n");
+        try c.out.writeAll("节点  未配置  sudo wslb-agent set-node\n");
     }
     if (state) |st| {
         try c.out.print("上行  {s} via {s}  LAN {s}\n", .{ st.uplink, st.gateway, cfg.lan_cidr });
@@ -313,9 +313,9 @@ fn cmdStatus(c: *Cli) !Exit {
         if (cfg.identity.locale.len != 0) cfg.identity.locale else "不管理",
     });
     if (daemon) {
-        try c.ok("wsl-egress 守护进程运行中", .{});
+        try c.ok("wslb-agent 守护进程运行中", .{});
     } else {
-        try c.bad("wsl-egress 守护进程未运行", .{});
+        try c.bad("wslb-agent 守护进程未运行", .{});
     }
     if (state) |st| {
         if (st.pid != 0) {
@@ -360,7 +360,7 @@ fn cmdCheck(c: *Cli) !Exit {
         if (c.json) {
             try c.out.print("{{\"ok\":false,\"error\":\"{s}\"}}\n", .{@errorName(err)});
         } else {
-            try c.bad("无法经隧道访问外网 {s}  查看日志: journalctl -u wsl-egress", .{@errorName(err)});
+            try c.bad("无法经隧道访问外网 {s}  查看日志: journalctl -u wslb-agent", .{@errorName(err)});
         }
         return .failed;
     };
@@ -479,13 +479,13 @@ fn cmdSetNode(c: *Cli, args: []const [:0]const u8) !Exit {
     try fsx.ensureDir(c.io, c.paths.etc);
     try node.save(c.io, c.gpa, c.etc("node.json"));
     try c.ok("节点 {s} → {s}:{d}  {s}/{s}", .{ if (node.name.len != 0) node.name else node.host, node.ip, node.port, @tagName(node.security), @tagName(node.transport) });
-    if (systemctl(c, &.{ "is-active", "-q", "wsl-egress.service" })) {
-        _ = systemctl(c, &.{ "reload", "wsl-egress.service" });
+    if (systemctl(c, &.{ "is-active", "-q", "wslb-guard.service" })) {
+        _ = systemctl(c, &.{ "reload", "wslb-guard.service" });
         try c.ok("已通知守护进程重新加载", .{});
         const cfg = try c.loadConfig();
         if (cfg.identity.timezone_mode == .auto) {
             try c.io.sleep(.fromSeconds(2), .awake);
-            _ = systemctl(c, &.{ "restart", "--no-block", "wsl-egress-identity-refresh.service" });
+            _ = systemctl(c, &.{ "restart", "--no-block", "wslb-identity-refresh.service" });
             try c.ok("后台按新出口重新同步时区", .{});
         }
     }
@@ -515,7 +515,7 @@ fn cmdConfig(c: *Cli, args: []const [:0]const u8) !Exit {
         return .ok;
     }
     if (!std.mem.eql(u8, sub, "set") or args.len != 3) {
-        try c.err.writeAll("用法: wsl-egress config show | set <lan-cidr|lan-gateway|remote-dns|mixed-port|singbox> <值>\n");
+        try c.err.writeAll("用法: wslb-agent config show | set <lan-cidr|lan-gateway|remote-dns|mixed-port|singbox> <值>\n");
         return .usage;
     }
     if (!c.requireRoot()) {
@@ -665,17 +665,17 @@ fn cmdLeaktest(c: *Cli) !Exit {
     if (!c.requireRoot()) {
         return .failed;
     }
-    const managed = c.env.get("WSL_EGRESS_NO_SYSTEMD") == null;
+    const managed = c.env.get("WSLB_NO_SYSTEMD") == null;
     try c.out.writeAll("停止 sing-box 后直连公网\n");
     if (managed) {
-        _ = systemctl(c, &.{ "stop", "wsl-egress.service" });
+        _ = systemctl(c, &.{ "stop", "wslb-guard.service" });
         try c.io.sleep(.fromSeconds(2), .awake);
     }
     try c.out.flush();
     const clean = try probeDirect(c);
     if (managed) {
         try c.out.writeAll("恢复 sing-box\n");
-        _ = systemctl(c, &.{ "start", "wsl-egress.service" });
+        _ = systemctl(c, &.{ "start", "wslb-guard.service" });
         try c.io.sleep(.fromSeconds(4), .awake);
         _ = try cmdCheck(c);
     }
@@ -690,7 +690,7 @@ fn cmdDisable(c: *Cli, args: []const [:0]const u8) !Exit {
         try c.err.writeAll("这会移除防火墙和黑洞路由 之后流量直连真实网络\n确认请加 --yes\n");
         return .usage;
     }
-    _ = systemctl(c, &.{ "disable", "--now", "wsl-egress.service", "wsl-egress-firewall.service" });
+    _ = systemctl(c, &.{ "disable", "--now", "wslb-guard.service", "wslb-firewall.service" });
     var nft = firewall.Nft.open(firewall.defaultLibPath(c.env)) catch |err| return c.fail("加载 libnftables 失败 {s}", .{@errorName(err)});
     defer nft.deinit();
     firewall.remove(&nft) catch return c.fail("删除防火墙表失败 {s}", .{nft.lastError()});
@@ -704,18 +704,18 @@ fn cmdDisable(c: *Cli, args: []const [:0]const u8) !Exit {
             sock.routeDelete(r) catch {};
         }
     }
-    try c.warn("已停用 kill-switch 流量将直连 恢复: systemctl enable --now wsl-egress-firewall wsl-egress", .{});
+    try c.warn("已停用 kill-switch 流量将直连 恢复: systemctl enable --now wslb-firewall wslb-agent", .{});
     return .ok;
 }
 
 test {
-    _ = @import("ip4.zig");
-    _ = @import("netlink.zig");
+    _ = @import("net/ip4.zig");
+    _ = @import("net/netlink.zig");
     _ = @import("fsx.zig");
     _ = @import("Config.zig");
-    _ = @import("Node.zig");
-    _ = @import("singbox.zig");
-    _ = @import("firewall.zig");
-    _ = @import("lan.zig");
+    _ = @import("net/Node.zig");
+    _ = @import("net/singbox.zig");
+    _ = @import("net/firewall.zig");
+    _ = @import("net/lan.zig");
     _ = @import("identity.zig");
 }

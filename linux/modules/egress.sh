@@ -1,16 +1,16 @@
 # shellcheck shell=bash
-# 出口模块 配置全部经 wsl-egress 写入 本脚本只负责问答和安装文件
+# 出口模块 配置全部经 wslb-agent 写入 本脚本只负责问答和安装文件
 
 PAYLOAD_EGRESS=$ROOT/payload/egress
-EGRESS_BIN=$ROOT/bin/wsl-egress
-SINGBOX_BIN=/usr/local/lib/wsl-egress/sing-box
+EGRESS_BIN=$ROOT/bin/wslb-agent
+SINGBOX_BIN=/usr/local/lib/wslb/sing-box
 
 egress_conflict_check() {
   local foreign=""
   if ip link show seattle-null >/dev/null 2>&1; then
     foreign="seattle-null（手工版 seattle-killswitch）"
-  elif ip link show egress-null >/dev/null 2>&1 && [[ ! -e /etc/systemd/system/wsl-egress.service ]]; then
-    foreign="egress-null（另一个发行版里的 wsl-egress）"
+  elif ip link show wslb-null >/dev/null 2>&1 && [[ ! -e /etc/systemd/system/wslb-guard.service ]]; then
+    foreign="wslb-null（另一个发行版里的 wslb-agent）"
   fi
   [[ -z $foreign ]] && return 0
   ui_yesno "检测到 WSL VM 中已有 kill-switch 在运行：
@@ -88,7 +88,7 @@ egress_ask() {
   return 0
 }
 
-# 时区 语言 对时 所有暴露点由 wsl-egress identity 统一写入
+# 时区 语言 对时 所有暴露点由 wslb-agent identity 统一写入
 identity_ask() {
   TZ_MODE=$(ui_menu "时区（与出口 IP 不一致是常见的指纹泄露点）" auto \
     auto    "跟随出口 IP（隧道建立后自动查询，推荐）" \
@@ -168,17 +168,17 @@ egress_apply() {
   step "安装 sing-box $SINGBOX_VERSION"
   singbox_install "$SINGBOX_VERSION"
 
-  step "安装 wsl-egress 并写入配置"
-  install -m 0755 "$EGRESS_BIN" /usr/local/bin/wsl-egress
-  ok "$(wsl-egress version)"
-  wsl-egress config set singbox "$SINGBOX_BIN" >/dev/null
-  wsl-egress config set lan-cidr "$LAN_CIDR" >/dev/null
-  wsl-egress config set lan-gateway "$LAN_GW" >/dev/null
-  wsl-egress set-node "$NODE_LINK" --ip "$NODE_IP" | sed 's/^/  /'
+  step "安装 wslb-agent 并写入配置"
+  install -m 0755 "$EGRESS_BIN" /usr/local/bin/wslb-agent
+  ok "$(wslb-agent version)"
+  wslb-agent config set singbox "$SINGBOX_BIN" >/dev/null
+  wslb-agent config set lan-cidr "$LAN_CIDR" >/dev/null
+  wslb-agent config set lan-gateway "$LAN_GW" >/dev/null
+  wslb-agent set-node "$NODE_LINK" --ip "$NODE_IP" | sed 's/^/  /'
   NODE_LINK=""
-  wsl-egress singbox-config >/tmp/wsl-egress-check.json
-  "$SINGBOX_BIN" check -c /tmp/wsl-egress-check.json || die "生成的 sing-box 配置未通过校验"
-  rm -f /tmp/wsl-egress-check.json
+  wslb-agent singbox-config >/tmp/wslb-agent-check.json
+  "$SINGBOX_BIN" check -c /tmp/wslb-agent-check.json || die "生成的 sing-box 配置未通过校验"
+  rm -f /tmp/wslb-agent-check.json
   ok "上行网段 $LAN_CIDR 网关 $LAN_GW"
 
   step "DNS / IPv6 加固"
@@ -188,9 +188,9 @@ egress_apply() {
   chmod 644 /etc/resolv.conf
   chattr +i /etc/resolv.conf 2>/dev/null && ok "/etc/resolv.conf 固定且不可改写" || warn "chattr 不可用，resolv.conf 未加锁"
   if [[ -d /etc/systemd ]]; then
-    install_payload "$PAYLOAD_EGRESS/resolved.conf" /etc/systemd/resolved.conf.d/wsl-egress.conf 0644
+    install_payload "$PAYLOAD_EGRESS/resolved.conf" /etc/systemd/resolved.conf.d/wslb-agent.conf 0644
   fi
-  cat >/etc/sysctl.d/90-wsl-egress.conf <<'EOF'
+  cat >/etc/sysctl.d/90-wslb-agent.conf <<'EOF'
 net.ipv6.conf.all.disable_ipv6 = 1
 net.ipv6.conf.default.disable_ipv6 = 1
 net.ipv6.conf.lo.disable_ipv6 = 1
@@ -207,35 +207,35 @@ EOF
 
   step "注册 systemd 服务"
   local u
-  for u in wsl-egress-firewall.service wsl-egress.service wsl-egress-identity.service wsl-egress-identity-refresh.service; do
+  for u in wslb-firewall.service wslb-guard.service wslb-identity.service wslb-identity-refresh.service; do
     install_payload "$PAYLOAD_EGRESS/$u" "/etc/systemd/system/$u" 0644
   done
-  systemctl enable wsl-egress-firewall.service wsl-egress.service wsl-egress-identity.service wsl-egress-identity-refresh.service >/dev/null 2>&1 ||
+  systemctl enable wslb-firewall.service wslb-guard.service wslb-identity.service wslb-identity-refresh.service >/dev/null 2>&1 ||
     die "systemctl enable 失败"
-  ok "wsl-egress-firewall / wsl-egress / wsl-egress-identity 已设为开机启动"
+  ok "wslb-firewall / wslb-agent / wslb-identity 已设为开机启动"
 }
 
 identity_apply() {
   step "时区 语言 对时"
   local -a args=(--timezone-mode "$TZ_MODE" --locale "$LOCALE" --ntp "$NTP")
   [[ -n $TZ_NAME ]] && args+=(--timezone "$TZ_NAME")
-  wsl-egress identity set "${args[@]}" | sed 's/^/  /'
+  wslb-agent identity set "${args[@]}" | sed 's/^/  /'
 }
 
 # 完成阶段 systemd 已运行
 egress_finalize() {
   step "启动出口隧道"
   systemctl daemon-reload
-  systemctl restart wsl-egress-firewall.service || warn "防火墙层暂未加载 libnftables 稍后经隧道安装"
-  systemctl restart wsl-egress.service
+  systemctl restart wslb-firewall.service || warn "防火墙层暂未加载 libnftables 稍后经隧道安装"
+  systemctl restart wslb-guard.service
   local info=""
   for _ in $(seq 1 40); do
-    info=$(wsl-egress check 2>/dev/null) && break
+    info=$(wslb-agent check 2>/dev/null) && break
     sleep 1
   done
   if [[ -z $info ]]; then
-    journalctl -u wsl-egress.service -n 30 --no-pager >&2 || true
-    die "出口不通（网络保持阻断，不会泄露）。检查节点链接后运行: sudo wsl-egress set-node"
+    journalctl -u wslb-guard.service -n 30 --no-pager >&2 || true
+    die "出口不通（网络保持阻断，不会泄露）。检查节点链接后运行: sudo wslb-agent set-node"
   fi
   echo "$info"
 }
@@ -244,13 +244,13 @@ egress_finalize() {
 egress_firewall_layer() {
   step "nftables 出站白名单"
   apt_quiet install libnftables1
-  systemctl restart wsl-egress-firewall.service
-  systemctl restart wsl-egress.service
+  systemctl restart wslb-firewall.service
+  systemctl restart wslb-guard.service
   sleep 3
-  if wsl-egress status --json | grep -q '"firewall": true'; then
+  if wslb-agent status --json | grep -q '"firewall": true'; then
     ok "防火墙层已加载"
   else
-    warn "防火墙层未加载，仅靠路由黑洞。查看: journalctl -u wsl-egress"
+    warn "防火墙层未加载，仅靠路由黑洞。查看: journalctl -u wslb-agent"
   fi
-  wsl-egress identity refresh --wait 30 | sed 's/^/  /' || warn "自动时区失败，稍后运行: sudo wsl-egress identity refresh"
+  wslb-agent identity refresh --wait 30 | sed 's/^/  /' || warn "自动时区失败，稍后运行: sudo wslb-agent identity refresh"
 }

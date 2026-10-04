@@ -11,19 +11,19 @@ pub fn build(b: *std.Build) void {
     options.addOption([]const u8, "version", b.option([]const u8, "version", "版本号") orelse "0.1.0-dev");
 
     const mod = b.createModule(.{
-        .root_source_file = b.path("src/main.zig"),
+        .root_source_file = b.path("src/agent/main.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
     mod.addOptions("build_options", options);
 
-    const exe = b.addExecutable(.{ .name = "wsl-egress", .root_module = mod });
+    const exe = b.addExecutable(.{ .name = "wslb-agent", .root_module = mod });
     b.installArtifact(exe);
 
     const run = b.addRunArtifact(exe);
     run.addPassthruArgs();
-    b.step("run", "运行 wsl-egress").dependOn(&run.step);
+    b.step("run", "运行 wslb-agent").dependOn(&run.step);
 
     const tests = b.addTest(.{ .root_module = mod });
     b.step("test", "单元测试").dependOn(&b.addRunArtifact(tests).step);

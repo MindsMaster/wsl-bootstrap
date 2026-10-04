@@ -1,5 +1,5 @@
 [Unit]
-Description=wsl-egress: timezone, locale and NTP identity before services start
+Description=wslb-agent: timezone, locale and NTP identity before services start
 DefaultDependencies=no
 After=local-fs.target
 Before=sysinit.target
@@ -7,7 +7,7 @@ Before=sysinit.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/local/bin/wsl-egress identity apply
+ExecStart=/usr/local/bin/wslb-agent identity apply
 
 [Install]
 WantedBy=sysinit.target

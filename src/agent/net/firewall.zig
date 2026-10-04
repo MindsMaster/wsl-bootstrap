@@ -1,10 +1,10 @@
 const std = @import("std");
-const Config = @import("Config.zig");
+const Config = @import("../Config.zig");
 const singbox = @import("singbox.zig");
 
 const Allocator = std.mem.Allocator;
 
-pub const table = "wsl_egress";
+pub const table = "wslb";
 
 /// mirrored 模式下访问 Windows 127.0.0.1 走这块网卡
 const windows_loopback_if = "loopback0";
@@ -95,7 +95,7 @@ pub const Nft = struct {
 };
 
 pub fn defaultLibPath(env: *const std.process.Environ.Map) []const u8 {
-    return env.get("WSL_EGRESS_LIBNFT") orelse "libnftables.so.1";
+    return env.get("WSLB_LIBNFT") orelse "libnftables.so.1";
 }
 
 pub fn apply(gpa: Allocator, nft: *Nft, cfg: Config, node_ip: ?[]const u8) !void {
@@ -121,5 +121,5 @@ test "ruleset shape" {
     const text = out.written();
     try std.testing.expect(std.mem.indexOf(u8, text, "policy drop") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "45.42.142.185/32, 192.168.8.0/24, 10.0.0.0/8") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "oifname \"egress0\" accept") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "oifname \"wslb0\" accept") != null);
 }

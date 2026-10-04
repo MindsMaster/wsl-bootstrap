@@ -1,7 +1,7 @@
 .{
-    .name = .wsl_egress,
+    .name = .wslb,
     .version = "0.1.0",
-    .fingerprint = 0x5df77bf6e7ac64c6,
+    .fingerprint = 0xebefb5ef0e195cd6,
     .minimum_zig_version = "0.17.0",
     .dependencies = .{},
     .paths = .{ "build.zig", "build.zig.zon", "src" },

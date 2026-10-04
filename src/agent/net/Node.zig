@@ -1,5 +1,5 @@
 const std = @import("std");
-const fsx = @import("fsx.zig");
+const fsx = @import("../fsx.zig");
 const ip4 = @import("ip4.zig");
 
 const Node = @This();

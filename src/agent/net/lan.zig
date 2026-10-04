@@ -1,12 +1,12 @@
 const std = @import("std");
-const Config = @import("Config.zig");
+const Config = @import("../Config.zig");
 const ip4 = @import("ip4.zig");
 const netlink = @import("netlink.zig");
 const singbox = @import("singbox.zig");
 
 const Allocator = std.mem.Allocator;
 
-pub const null_if = "egress-null";
+pub const null_if = "wslb-null";
 pub const null_addr = "169.254.254.1";
 
 /// 旧版手工 kill-switch 的网卡 同一 VM 内视为冲突

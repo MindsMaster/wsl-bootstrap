@@ -54,7 +54,7 @@ pub fn udp(addr: ip4.Addr, port: u16) Outcome {
         .port = std.mem.nativeToBig(u16, port),
         .addr = std.mem.nativeToBig(u32, addr.v),
     };
-    const payload = "wsl-egress-probe";
+    const payload = "wslb-agent-probe";
     const src = linux.sendto(fd, payload, payload.len, 0, @ptrCast(&sa), @sizeOf(linux.sockaddr.in));
     return switch (linux.errno(src)) {
         .SUCCESS => .timeout,

@@ -1,10 +1,10 @@
 const std = @import("std");
-const Config = @import("Config.zig");
+const Config = @import("../Config.zig");
 const Node = @import("Node.zig");
 const ip4 = @import("ip4.zig");
 
 /// 与 firewall.zig 的放行网卡一致
-pub const tun_if = "egress0";
+pub const tun_if = "wslb0";
 pub const tun_cidr = "172.19.0.1/30";
 
 pub fn render(w: *std.Io.Writer, cfg: Config, node: Node, lan_if: []const u8) std.Io.Writer.Error!void {
