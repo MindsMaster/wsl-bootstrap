@@ -1,0 +1,13 @@
+[Unit]
+Description=Hide Windows Claude Code data from WSL
+After=local-fs.target
+DefaultDependencies=no
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/hide-windows-claude 3
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target

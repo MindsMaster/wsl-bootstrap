@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# wsl-firefox: launch the Mozilla-deb Firefox detached under WSLg.
+#
+#   wsl-firefox [url]               default profile
+#   wsl-firefox -P <name> [url]     isolated persistent profile, created on first use
+#                                   (ffp-<name>), log ~/.cache/firefox-<name>.log
+#   wsl-firefox --profiles          list profiles
+#   wsl-firefox --shortcut <name>   Windows Start-menu entry "Firefox (<name>)"
+#
+# GPU/WebRender env comes from /etc/profile.d/wslg-gpu.sh; prefs from
+# /usr/lib/firefox/defaults/pref/wslg-prefs.js. Log: ~/.cache/firefox.log
+set -uo pipefail
+
+ffdir() {
+  # New Firefox uses the XDG path unless a legacy ~/.mozilla/firefox exists.
+  if [[ -d $HOME/.mozilla/firefox ]]; then
+    echo "$HOME/.mozilla/firefox"
+  else
+    echo "${XDG_CONFIG_HOME:-$HOME/.config}/mozilla/firefox"
+  fi
+}
+
+ensure_profile() {
+  local dir name=$1 n=0
+  dir=$(ffdir)
+  [[ $name =~ ^[A-Za-z0-9_-]+$ ]] || { echo "profile name: letters, digits, _ - only" >&2; return 1; }
+  mkdir -p "$dir"
+  [[ -f $dir/profiles.ini ]] || printf '[General]\nStartWithLastProfile=1\nVersion=2\n' >"$dir/profiles.ini"
+  grep -qx "Name=$name" "$dir/profiles.ini" && return 0
+  mkdir -p "$dir/ffp-$name"
+  while grep -q "^\[Profile$n\]" "$dir/profiles.ini"; do n=$((n + 1)); done
+  printf '\n[Profile%d]\nName=%s\nIsRelative=1\nPath=ffp-%s\n' "$n" "$name" "$name" >>"$dir/profiles.ini"
+  echo "Created profile '$name' at $dir/ffp-$name"
+}
+
+log=$HOME/.cache/firefox.log
+case ${1:-} in
+  --profiles)
+    grep -oP '^Name=\K.*' "$(ffdir)/profiles.ini" 2>/dev/null
+    exit 0 ;;
+  --shortcut)
+    [[ -n ${2:-} ]] || { echo "usage: wsl-firefox --shortcut <name>" >&2; exit 1; }
+    mkdir -p "$HOME/.local/share/applications"
+    printf '[Desktop Entry]\nType=Application\nName=Firefox (%s)\nExec=/usr/local/bin/wsl-firefox -P %s %%u\nIcon=firefox\nCategories=Network;WebBrowser;\n' \
+      "$2" "$2" >"$HOME/.local/share/applications/firefox-ffp-$2.desktop"
+    echo "Shortcut created: Firefox ($2)"
+    exit 0 ;;
+  -P|-p)
+    if [[ -n ${2:-} && $2 != -* ]]; then
+      ensure_profile "$2" || exit 1
+      log=$HOME/.cache/firefox-$2.log
+    fi ;;
+esac
+
+# shellcheck disable=SC1091
+[[ -r /etc/profile.d/wslg-gpu.sh ]] && . /etc/profile.d/wslg-gpu.sh
+export DISPLAY=${DISPLAY:-:0}
+export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/mnt/wslg/runtime-dir}
+export PULSE_SERVER=${PULSE_SERVER:-unix:/mnt/wslg/PulseServer}
+
+mkdir -p "$HOME/.cache"
+if [[ $(readlink -f /usr/bin/firefox) != /usr/lib/firefox/* ]]; then
+  echo "warning: /usr/bin/firefox is not the Mozilla deb (snap transitional package?) — see README" >&2
+fi
+nohup /usr/bin/firefox "$@" >"$log" 2>&1 &
+disown

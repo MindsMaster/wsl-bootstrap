@@ -1,0 +1,15 @@
+# wsl-bootstrap: WSLg GPU environment (Mesa d3d12 path).
+# Firefox window compositing on WSLg must stay software (Weston + RDP copies
+# through system memory; HW WebRender punches holes). WebGL still uses the GPU.
+export LIBGL_ALWAYS_SOFTWARE=0
+export GALLIUM_DRIVER=d3d12
+export MESA_LOADER_DRIVER_OVERRIDE=d3d12
+@ADAPTER_LINE@
+case ":${LD_LIBRARY_PATH:-}:" in *:/usr/lib/wsl/lib:*) ;; *) export LD_LIBRARY_PATH="/usr/lib/wsl/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ;; esac
+export GDK_BACKEND=x11
+unset WAYLAND_DISPLAY
+export MOZ_ENABLE_WAYLAND=0
+export MOZ_WEBRENDER_SOFTWARE=1
+export MOZ_WEBRENDER_COMPOSITOR=0
+unset MOZ_WEBRENDER
+unset MOZ_ACCELERATED

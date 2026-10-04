@@ -1,0 +1,14 @@
+[Unit]
+Description=wsl-egress: nftables allowlist and blackhole default route before any network use
+DefaultDependencies=no
+After=local-fs.target
+Before=network-pre.target wsl-egress.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/wsl-egress firewall-up
+
+[Install]
+WantedBy=sysinit.target

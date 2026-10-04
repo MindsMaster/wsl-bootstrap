@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Hide Windows Claude Code data from Linux tools inside WSL.
+# Windows copies are untouched. Win32 interop / cmd.exe stays enabled.
+# Daily tools (ls/cat/find/grep/claude) see empty/unreadable placeholders, not real files.
+set -euo pipefail
+
+HIDE_ROOT=/var/lib/wsl-hide-windows-claude
+INTERVAL="${1:-3}"
+
+ensure_hide_store() {
+  mkdir -p "${HIDE_ROOT}/empty-dir"
+  if [[ ! -f "${HIDE_ROOT}/empty-file" ]]; then
+    : > "${HIDE_ROOT}/empty-file"
+  fi
+  chmod 000 "${HIDE_ROOT}/empty-dir" "${HIDE_ROOT}/empty-file" || true
+}
+
+already_overlaid() {
+  findmnt -n "$1" >/dev/null 2>&1
+}
+
+overlay_dir() {
+  local target="$1"
+  [[ -d "${target}" ]] || return 0
+  already_overlaid "${target}" && return 0
+  mount --bind "${HIDE_ROOT}/empty-dir" "${target}"
+  mount -o remount,ro,bind "${target}" 2>/dev/null || true
+}
+
+overlay_file() {
+  local target="$1"
+  [[ -f "${target}" ]] || return 0
+  already_overlaid "${target}" && return 0
+  mount --bind "${HIDE_ROOT}/empty-file" "${target}"
+  mount -o remount,ro,bind "${target}" 2>/dev/null || true
+}
+
+hide_home() {
+  local home="$1"
+  [[ -d "${home}" ]] || return 0
+  overlay_dir "${home}/.claude"
+  overlay_file "${home}/.claude.json"
+  overlay_file "${home}/.claude.json.backup"
+  overlay_file "${home}/.claude.json.tmp"
+  local extra
+  for extra in "${home}"/.claude.json.tmp*; do
+    [[ -f "${extra}" ]] || continue
+    overlay_file "${extra}"
+  done
+  overlay_dir "${home}/.config/claude"
+  overlay_dir "${home}/AppData/Roaming/Claude"
+  overlay_dir "${home}/AppData/Local/Claude"
+  overlay_dir "${home}/AppData/Local/claude-cli"
+  overlay_dir "${home}/AppData/Roaming/claude-cli"
+}
+
+apply_once() {
+  ensure_hide_store
+  local home
+  for home in /mnt/*/Users/*; do
+    [[ -d "${home}" ]] || continue
+    hide_home "${home}"
+  done
+}
+
+if [[ "${1:-}" == "--once" ]]; then
+  apply_once
+  exit 0
+fi
+
+for _ in $(seq 1 30); do
+  if ls -d /mnt/*/Users/* >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+
+apply_once || true
+while true; do
+  apply_once || true
+  sleep "${INTERVAL}"
+done
