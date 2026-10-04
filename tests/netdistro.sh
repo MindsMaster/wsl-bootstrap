@@ -90,6 +90,14 @@ sleep 5
 check "sing-box 5 秒后仍是同一进程" test "$pid" == "$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$ROOT/run/wslb/state.json")"
 check "默认路由只剩黑洞" bash -c "[[ \$(ip -4 route show default) == 'default dev wslb-null '* ]]"
 
+echo "节点不通时经真实 sing-box 的健康探测"
+in_root /usr/local/bin/wslb-agent config set health-interval 2 >/dev/null
+in_root /usr/local/bin/wslb-agent config set health-timeout 2 >/dev/null
+in_root /usr/local/bin/wslb-agent config set health-failures 2 >/dev/null
+health_restarted() { [[ $(state) =~ \"health_restarts\":\ ([1-9]) ]]; }
+check "sing-box 没有替节点作答 探测失败后重启" wait_for 100 health_restarted
+in_root /usr/local/bin/wslb-agent config set health-interval 0 >/dev/null
+
 echo "暂停 sing-box 时直连被拒"
 if in_root /usr/local/bin/wslb-agent leaktest >"$WORK/leak.txt"; then ok "leaktest 无泄露"; else bad "leaktest 报告泄露"; fi
 sed 's/^/      /' "$WORK/leak.txt"
