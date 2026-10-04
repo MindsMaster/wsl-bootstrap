@@ -25,7 +25,7 @@ pub fn apply(gpa: Allocator, io: std.Io, env: *const std.process.Environ.Map) !O
     if (try Guard.foreignPresent(gpa, &sock, cfg)) |name| {
         return .{ .foreign = name };
     }
-    Guard.disableIpv6(io);
+    Guard.hardenSysctls(io);
     _ = try Guard.enforce(gpa, &sock, cfg, null);
 
     var nft: Nft = .init(gpa, io, env);

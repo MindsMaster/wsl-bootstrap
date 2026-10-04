@@ -115,7 +115,7 @@ pub fn firewallUp(gpa: Allocator, io: std.Io, env: *const std.process.Environ.Ma
         log.err("检测到另一套 kill-switch 的网卡 {s} 不做任何改动", .{name});
         return error.ForeignKillswitch;
     }
-    disableIpv6(io);
+    hardenSysctls(io);
     _ = try enforce(gpa, &sock, cfg.value, if (node) |n| n.value.ipAddr() else null);
 
     var nft: Nft = .init(gpa, io, env);
@@ -133,9 +133,19 @@ pub fn allowOf(cfg: Config, node_ip: ?[]const u8) firewall.Allow {
     return .{ .node_ip = node_ip, .lan_cidr = cfg.lan_cidr, .local_cidrs = cfg.local_cidrs };
 }
 
-pub fn disableIpv6(io: std.Io) void {
-    for ([_][]const u8{ "/proc/sys/net/ipv6/conf/all/disable_ipv6", "/proc/sys/net/ipv6/conf/default/disable_ipv6" }) |p| {
-        std.Io.Dir.cwd().writeFile(io, .{ .sub_path = p, .data = "1\n", .flags = .{ .truncate = false } }) catch {};
+/// 这些 sysctl 按网络命名空间生效 所有发行版共用一份
+const hardening = [_][2][]const u8{
+    .{ "/proc/sys/net/ipv6/conf/all/disable_ipv6", "1" },
+    .{ "/proc/sys/net/ipv6/conf/default/disable_ipv6", "1" },
+    .{ "/proc/sys/net/ipv4/tcp_timestamps", "0" },
+    .{ "/proc/sys/net/ipv4/conf/all/accept_redirects", "0" },
+    .{ "/proc/sys/net/ipv4/conf/default/accept_redirects", "0" },
+    .{ "/proc/sys/net/ipv4/conf/all/accept_source_route", "0" },
+};
+
+pub fn hardenSysctls(io: std.Io) void {
+    for (hardening) |kv| {
+        std.Io.Dir.cwd().writeFile(io, .{ .sub_path = kv[0], .data = kv[1], .flags = .{ .truncate = false } }) catch {};
     }
 }
 
@@ -277,7 +287,7 @@ pub fn run(gpa: Allocator, io: std.Io, env: *const std.process.Environ.Map) !voi
     };
     defer g.deinit();
     try fsx.ensureDir(io, paths.run);
-    disableIpv6(io);
+    hardenSysctls(io);
 
     var mask = signalMask();
     _ = linux.sigprocmask(linux.SIG.BLOCK, &mask, null);

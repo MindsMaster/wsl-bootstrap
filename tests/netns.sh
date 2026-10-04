@@ -11,7 +11,7 @@ CACHE=${XDG_CACHE_HOME:-$HOME/.cache}/wslb-test
 if [[ ${1:-} != --inner ]]; then
   BIN=$(realpath "${1:-$HERE/../zig-out/bin/wslb-agent}")
   [[ -x $BIN ]] || { echo "找不到 $BIN 先 zig build" >&2; exit 1; }
-  alpine_root "$CACHE/alpine-$ALPINE_VERSION"
+  alpine_root "$CACHE/alpine-$ALPINE_VERSION" "$CACHE"
   alpine_nft_wrapper "$CACHE/alpine-$ALPINE_VERSION" "$CACHE/nft"
   export WSLB_TEST_BIN=$BIN WSLB_NFT=$CACHE/nft
   export WSLB_TEST_HOST_NS
@@ -124,6 +124,7 @@ echo "用户发行版开机兜底 守护进程未运行"
 check "黑洞默认路由 外来默认路由已清除" only_blackhole_default
 check "兜底防火墙表已建立" table_owner boot
 check "兜底层不设节点路由" bash -c "! ip -4 route show $NODE/32 | grep -q via"
+check "关闭 IPv6 与 TCP 时间戳" bash -c "[[ \$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6) == 1 && \$(cat /proc/sys/net/ipv4/tcp_timestamps) == 0 ]]"
 "$BIN" boot >/dev/null
 check "重复执行不改动已有的表" table_owner boot
 
