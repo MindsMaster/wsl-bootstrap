@@ -69,7 +69,8 @@ fn notifyGuard(c: *Cli) !void {
 fn status(c: *Cli, _: []const [:0]const u8) !Exit {
     const cfg = try loadConfig(c);
     const state = guardState(c);
-    const node_ip_text: []const u8 = if (loadNode(c)) |n| n.ip else if (state) |s| s.node else "";
+    const local_node = loadNode(c);
+    const node_ip_text: []const u8 = if (local_node) |n| n.ip else if (state) |s| s.node else "";
     const node_ip: ?ip4.Addr = ip4.Addr.parse(node_ip_text) catch null;
 
     var sock = try netlink.Socket.open(0);
@@ -117,6 +118,9 @@ fn status(c: *Cli, _: []const [:0]const u8) !Exit {
             .blackhole = blackhole,
             .foreign_default_routes = foreign_routes,
             .node = node_ip_text,
+            .node_name = if (local_node) |n| n.name else "",
+            .node_host = if (local_node) |n| n.host else "",
+            .node_port = if (local_node) |n| n.port else 0,
             .node_route = node_route,
             .tun = tun_up,
             .uplink = if (state) |s| s.uplink else "",
@@ -349,7 +353,7 @@ fn config(c: *Cli, args: []const [:0]const u8) !Exit {
         return .ok;
     }
     if (args.len != 3) {
-        return c.usage("config show | set <键> <值> | add|remove <列表> <值>\n  键: lan-cidr lan-gateway remote-dns mixed-port singbox health-interval health-timeout health-failures\n  列表: local-cidrs exclude-cidrs exclude-ifaces foreign-ifaces");
+        return c.usage("config show | set <键> <值> | add|remove <列表> <值>\n  键: lan-cidr lan-gateway remote-dns mixed-port singbox health-interval health-timeout health-failures\n  列表: local-cidrs exclude-cidrs exclude-ifaces foreign-ifaces  set 时用逗号分隔整体替换");
     }
     if (!c.requireRoot()) {
         return .failed;
@@ -376,6 +380,16 @@ fn config(c: *Cli, args: []const [:0]const u8) !Exit {
             cfg.health.timeout_s = std.fmt.parseInt(u32, val, 10) catch return c.fail("秒数无效: {s}", .{val});
         } else if (std.mem.eql(u8, key, "health-failures")) {
             cfg.health.failures = std.fmt.parseInt(u32, val, 10) catch return c.fail("次数无效: {s}", .{val});
+        } else if (listField(&cfg, key)) |field| {
+            var list: std.ArrayList([]const u8) = .empty;
+            var it = std.mem.tokenizeAny(u8, val, ", ");
+            while (it.next()) |item| {
+                if (std.mem.endsWith(u8, key, "-cidrs")) {
+                    _ = ip4.Cidr.parse(item) catch return c.fail("不是有效网段: {s}", .{item});
+                }
+                try list.append(c.arena, item);
+            }
+            field.* = list.items;
         } else {
             return c.fail("未知配置键 {s}", .{key});
         }
