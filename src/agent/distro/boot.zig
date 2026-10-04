@@ -1,5 +1,4 @@
 const std = @import("std");
-const Control = @import("../net/Control.zig");
 const Guard = @import("../net/Guard.zig");
 const NetConfig = @import("../net/Config.zig");
 const Nft = @import("../net/Nft.zig");
@@ -12,13 +11,12 @@ const log = std.log.scoped(.boot);
 pub const Outcome = union(enum) {
     /// 另一套 kill-switch 在管网络 什么都不动
     foreign: []const u8,
-    /// 守护进程已在运行 它的规则更完整
-    guard_running,
-    /// 已加载兜底层 nft 不可用时只有路由黑洞
-    applied: struct { firewall: bool },
+    /// nft 不可用时只有路由黑洞 guard 表示守护进程的完整规则已在
+    applied: struct { firewall: bool, guard: bool },
 };
 
 /// 用户发行版开机最早一步 网络发行版还没起来时先断网
+/// 不看守护进程在不在 控制套接字可以被冒充 而这里的每一步对守护进程都无害
 /// 只在防火墙表不存在时创建 不碰守护进程设的节点路由
 pub fn apply(gpa: Allocator, io: std.Io, env: *const std.process.Environ.Map) !Outcome {
     const cfg: NetConfig = .{};
@@ -27,27 +25,27 @@ pub fn apply(gpa: Allocator, io: std.Io, env: *const std.process.Environ.Map) !O
     if (try Guard.foreignPresent(gpa, &sock, cfg)) |name| {
         return .{ .foreign = name };
     }
-    if (Control.alive()) {
-        return .guard_running;
-    }
     Guard.disableIpv6(io);
     _ = try Guard.enforce(gpa, &sock, cfg, null);
 
     var nft: Nft = .init(gpa, io, env);
     if (!nft.available()) {
         log.warn("找不到 nft {s} 仅靠路由黑洞", .{nft.path});
-        return .{ .applied = .{ .firewall = false } };
+        return .{ .applied = .{ .firewall = false, .guard = false } };
     }
     firewall.apply(gpa, &nft, .boot, Guard.allowOf(cfg, null)) catch |err| switch (err) {
-        error.NftRejected => {
-            if (try firewall.currentOwner(gpa, &nft) == null) {
-                log.err("兜底防火墙加载失败 {s}", .{nft.lastError()});
-                return err;
-            }
-        },
+        error.NftRejected => {},
         else => return err,
     };
-    return .{ .applied = .{ .firewall = true } };
+    const owner = firewall.currentOwner(gpa, &nft) catch |err| switch (err) {
+        error.ForeignTable => return .{ .applied = .{ .firewall = true, .guard = false } },
+        else => return err,
+    };
+    if (owner == null) {
+        log.err("兜底防火墙加载失败 {s}", .{nft.lastError()});
+        return error.NftRejected;
+    }
+    return .{ .applied = .{ .firewall = true, .guard = owner.? == .guard } };
 }
 
 /// 连着网络发行版不放 它就不会被 WSL 停掉 断了按退避重连

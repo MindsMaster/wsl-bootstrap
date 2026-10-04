@@ -41,8 +41,9 @@ fn bootCmd(c: *Cli, _: []const [:0]const u8) !Exit {
     const outcome = try boot.apply(c.gpa, c.io, c.env);
     switch (outcome) {
         .foreign => |name| try c.warn("另一套 kill-switch {s} 在管理网络 不做改动", .{name}),
-        .guard_running => try c.ok("网络发行版的守护进程已在运行", .{}),
-        .applied => |a| if (a.firewall) {
+        .applied => |a| if (a.guard) {
+            try c.ok("黑洞路由已确认 守护进程的完整规则已在", .{});
+        } else if (a.firewall) {
             try c.ok("已加载开机兜底 黑洞路由与防火墙", .{});
         } else {
             try c.warn("已加载黑洞路由 找不到 nft 没有防火墙层", .{});

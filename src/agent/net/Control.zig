@@ -10,6 +10,13 @@ const Ucred = extern struct {
     gid: u32,
 };
 
+fn peerUid(fd: i32) u32 {
+    var cred: Ucred = .{ .pid = 0, .uid = std.math.maxInt(u32), .gid = 0 };
+    var len: linux.socklen_t = @sizeOf(Ucred);
+    _ = linux.getsockopt(fd, linux.SOL.SOCKET, linux.SO.PEERCRED, std.mem.asBytes(&cred), &len);
+    return cred.uid;
+}
+
 fn sockaddr() linux.sockaddr.un {
     var sa: linux.sockaddr.un = .{ .path = undefined };
     @memset(&sa.path, 0);
@@ -48,10 +55,7 @@ pub const Server = struct {
 
     pub fn accept(s: Server) ?Conn {
         const fd = check(linux.accept4(s.fd, null, null, linux.SOCK.CLOEXEC)) catch return null;
-        var cred: Ucred = undefined;
-        var len: linux.socklen_t = @sizeOf(Ucred);
-        _ = linux.getsockopt(fd, linux.SOL.SOCKET, linux.SO.PEERCRED, std.mem.asBytes(&cred), &len);
-        return .{ .fd = fd, .uid = cred.uid };
+        return .{ .fd = fd, .uid = peerUid(fd) };
     }
 };
 
@@ -96,11 +100,15 @@ pub const Conn = struct {
 };
 
 /// 发一行命令 读回复直到对端关闭
+/// 抽象套接字没有权限控制 任何进程都能抢先绑定 只认 root 开的
 pub fn request(cmd: []const u8, buf: []u8) ![]const u8 {
     const fd = try check(linux.socket(linux.AF.UNIX, linux.SOCK.STREAM | linux.SOCK.CLOEXEC, 0));
     defer _ = linux.close(fd);
     const sa = sockaddr();
     _ = try check(linux.connect(fd, &sa, sockaddr_len));
+    if (peerUid(fd) != 0) {
+        return error.Impostor;
+    }
     var line: [128]u8 = undefined;
     const msg = std.fmt.bufPrint(&line, "{s}\n", .{cmd}) catch return error.RequestTooLong;
     _ = try check(linux.write(fd, msg.ptr, msg.len));
@@ -117,6 +125,15 @@ pub fn request(cmd: []const u8, buf: []u8) ![]const u8 {
         n += @intCast(rc);
     }
     return buf[0..n];
+}
+
+/// 占着控制套接字的进程 uid 没有人占返回 null
+pub fn holderUid() ?u32 {
+    const fd = check(linux.socket(linux.AF.UNIX, linux.SOCK.STREAM | linux.SOCK.CLOEXEC, 0)) catch return null;
+    defer _ = linux.close(fd);
+    const sa = sockaddr();
+    _ = check(linux.connect(fd, &sa, sockaddr_len)) catch return null;
+    return peerUid(fd);
 }
 
 pub fn alive() bool {

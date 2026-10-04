@@ -53,6 +53,10 @@ fn notifyGuard(c: *Cli) !void {
     var buf: [128]u8 = undefined;
     const r = Control.request("reload", &buf) catch |err| switch (err) {
         error.NotRunning => return,
+        error.Impostor => {
+            try c.warn("控制套接字被非 root 进程占用 未通知守护进程", .{});
+            return;
+        },
         else => return err,
     };
     if (std.mem.startsWith(u8, r, "ok")) {
@@ -498,6 +502,7 @@ fn enable(c: *Cli, _: []const [:0]const u8) !Exit {
 fn guard(c: *Cli, _: []const [:0]const u8) !Exit {
     Guard.run(c.gpa, c.io, c.env) catch |err| switch (err) {
         error.ForeignKillswitch => return c.fail("另一套 kill-switch 正在管理网络 拒绝启动", .{}),
+        error.Impostor => return c.fail("控制套接字被非 root 进程占用 拒绝启动 网络保持阻断", .{}),
         error.AlreadyRunning => return .ok,
         else => return err,
     };

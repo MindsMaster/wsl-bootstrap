@@ -251,6 +251,11 @@ pub fn run(gpa: Allocator, io: std.Io, env: *const std.process.Environ.Map) !voi
     }
     const control = Control.Server.open() catch |err| switch (err) {
         error.AlreadyRunning => {
+            const uid = Control.holderUid() orelse 0;
+            if (uid != 0) {
+                log.err("控制套接字被 uid {d} 的进程占用 无法启动 网络保持阻断", .{uid});
+                return error.Impostor;
+            }
             log.info("同一 VM 已有守护进程在运行", .{});
             return error.AlreadyRunning;
         },
