@@ -250,6 +250,42 @@ check "停用状态下 start 不拉起" guard_gone
 check "enable 后守护进程恢复" wait_for 3000 guard_alive
 check "enable 后防火墙恢复" wait_for 3000 table_owner guard
 
+echo "另一套 kill-switch 后启动 守护进程让出"
+seattle_up() {
+  ip link add seattle-null type dummy
+  ip link set seattle-null up
+  ip link add seattle0 type dummy
+  ip route replace default dev seattle-null metric 5
+}
+seattle_down() {
+  ip link del seattle0
+  ip link del seattle-null
+}
+retreated() { no_table && ! ip -4 route show default | grep -q wslb-null; }
+seattle_route_kept() { ip -4 route show default | grep -q 'dev seattle-null'; }
+check "守护进程在运行" guard_alive
+seattle_up
+if wait_for 1500 retreated; then ok "${ELAPSED}ms 内删掉 wslb 表和黑洞默认路由"; else bad "守护进程没有让出"; fi
+check "守护进程退出" wait_for 2000 guard_gone
+check "seattle 的默认路由保留" seattle_route_kept
+"$BIN" start >/dev/null
+sleep 1
+check "seattle 在时 start 不拉起守护进程" guard_gone
+
+echo "另一套 kill-switch 后启动 开机兜底让出"
+seattle_down
+"$BIN" boot >/dev/null
+check "兜底层已建立" table_owner boot
+printf '{ "wsl_exe": "/bin/false", "net_distro": "wslb-net" }\n' >"$WSLB_ETC/distro.json"
+"$BIN" link 2>"$WORK/link.log" &
+LINK=$!
+sleep 1
+seattle_up
+if wait_for 8000 retreated; then ok "link ${ELAPSED}ms 内拆掉兜底表和黑洞默认路由"; else bad "link 没有拆掉兜底"; fi
+check "seattle 的默认路由保留" seattle_route_kept
+kill "$LINK"
+wait "$LINK" 2>/dev/null || true
+
 echo
 if (( FAIL > 0 )); then
   echo "守护进程日志:"

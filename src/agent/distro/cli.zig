@@ -270,7 +270,7 @@ fn bootCmd(c: *Cli, _: []const [:0]const u8) !Exit {
 
 fn linkCmd(c: *Cli, _: []const [:0]const u8) !Exit {
     const cfg = try loadConfig(c);
-    try boot.link(c.gpa, c.io, cfg.wsl_exe, cfg.net_distro);
+    try boot.link(c.gpa, c.io, c.env, cfg.wsl_exe, cfg.net_distro);
     return .ok;
 }
 

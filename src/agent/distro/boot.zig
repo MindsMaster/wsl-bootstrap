@@ -1,4 +1,5 @@
 const std = @import("std");
+const linux = std.os.linux;
 const Guard = @import("../net/Guard.zig");
 const NetConfig = @import("../net/Config.zig");
 const Nft = @import("../net/Nft.zig");
@@ -49,33 +50,74 @@ pub fn apply(gpa: Allocator, io: std.Io, env: *const std.process.Environ.Map) !O
 }
 
 /// 连着网络发行版不放 它就不会被 WSL 停掉 断了按退避重连
-pub fn link(gpa: Allocator, io: std.Io, wsl_exe: []const u8, net_distro: []const u8) !void {
+/// 另一套 kill-switch 出现时拆掉开机兜底 让它接管 每 5 秒看一次
+pub fn link(gpa: Allocator, io: std.Io, env: *const std.process.Environ.Map, wsl_exe: []const u8, net_distro: []const u8) !void {
     var backoff_s: i64 = 2;
+    var yielded = false;
     while (true) {
-        var sock = try netlink.Socket.open(0);
-        const foreign = Guard.foreignPresent(gpa, &sock, .{}) catch null;
-        sock.close();
-        if (foreign) |name| {
-            log.info("另一套 kill-switch {s} 在运行 不连接网络发行版", .{name});
-            try io.sleep(.fromSeconds(30), .awake);
+        if (foreign(gpa)) |name| {
+            if (!yielded) {
+                log.info("另一套 kill-switch {s} 在运行 拆掉开机兜底 不连接网络发行版", .{name});
+                var sock = try netlink.Socket.open(0);
+                Guard.retreat(gpa, io, env, &sock);
+                sock.close();
+                yielded = true;
+            }
+            try io.sleep(.fromSeconds(5), .awake);
             continue;
         }
+        yielded = false;
         const started = Guard.nowMs();
         var child = std.process.spawn(io, .{
             .argv = &.{ wsl_exe, "-d", net_distro, "-u", "root", "--exec", "/usr/local/bin/wslb-agent", "hold" },
             .stdin = .ignore,
         }) catch |err| {
             log.err("无法启动 {s} {s}", .{ wsl_exe, @errorName(err) });
-            try io.sleep(.fromSeconds(backoff_s), .awake);
+            try sleepWatching(gpa, io, backoff_s);
             backoff_s = @min(backoff_s * 2, 60);
             continue;
         };
+        if (try waitWatching(gpa, &child)) {
+            child.kill(io);
+            continue;
+        }
         _ = child.wait(io) catch {};
         if (Guard.nowMs() - started > 60_000) {
             backoff_s = 2;
         }
         log.warn("与 {s} 的连接断开 {d} 秒后重连", .{ net_distro, backoff_s });
-        try io.sleep(.fromSeconds(backoff_s), .awake);
+        try sleepWatching(gpa, io, backoff_s);
         backoff_s = @min(backoff_s * 2, 60);
+    }
+}
+
+fn foreign(gpa: Allocator) ?[]const u8 {
+    var sock = netlink.Socket.open(0) catch return null;
+    defer sock.close();
+    return Guard.foreignPresent(gpa, &sock, .{}) catch null;
+}
+
+/// 分段睡 每段都看一眼有没有另一套 kill-switch
+fn sleepWatching(gpa: Allocator, io: std.Io, seconds: i64) !void {
+    var left = seconds;
+    while (left > 0 and foreign(gpa) == null) {
+        const step = @min(left, 5);
+        try io.sleep(.fromSeconds(step), .awake);
+        left -= step;
+    }
+}
+
+/// 子进程还在时每 5 秒检查一次 返回 true 表示发现另一套 kill-switch
+fn waitWatching(gpa: Allocator, child: *std.process.Child) !bool {
+    const pidfd: i32 = @intCast(linux.pidfd_open(child.id.?, 0));
+    defer _ = linux.close(pidfd);
+    while (true) {
+        var fds = [_]linux.pollfd{.{ .fd = pidfd, .events = linux.POLL.IN, .revents = 0 }};
+        if (linux.poll(&fds, 1, 5000) > 0) {
+            return false;
+        }
+        if (foreign(gpa) != null) {
+            return true;
+        }
     }
 }

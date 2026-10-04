@@ -1,6 +1,8 @@
 const std = @import("std");
 const linux = std.os.linux;
 const Control = @import("Control.zig");
+const Guard = @import("Guard.zig");
+const netlink = @import("netlink.zig");
 const Paths = @import("../Paths.zig");
 const fsx = @import("../fsx.zig");
 
@@ -19,7 +21,7 @@ pub fn disabled(io: std.Io, paths: Paths) bool {
 
 /// 守护进程不在就拉起一个 返回 true 表示这次新拉起
 pub fn ensureGuard(io: std.Io, paths: Paths, envp: Envp) !bool {
-    if (Control.alive() or disabled(io, paths)) {
+    if (Control.alive() or disabled(io, paths) or foreignPresent()) {
         return false;
     }
     try fsx.ensureDir(io, paths.log);
@@ -42,6 +44,16 @@ pub fn hold(io: std.Io, paths: Paths, envp: Envp) !void {
         }
         try io.sleep(.fromSeconds(5), .awake);
     }
+}
+
+/// 另一套 kill-switch 在时不拉起 否则守护进程每 5 秒启动一次再拒绝
+fn foreignPresent() bool {
+    var arena_buf: [64 << 10]u8 = undefined;
+    var fba: std.heap.FixedBufferAllocator = .init(&arena_buf);
+    var sock = netlink.Socket.open(0) catch return false;
+    defer sock.close();
+    const found = Guard.foreignPresent(fba.allocator(), &sock, .{}) catch return false;
+    return found != null;
 }
 
 fn rotate(io: std.Io, path: []const u8) void {

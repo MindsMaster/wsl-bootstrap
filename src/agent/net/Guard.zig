@@ -37,6 +37,7 @@ const firewall_backstop_ms = 30_000;
 
 gpa: Allocator,
 io: std.Io,
+env: *const std.process.Environ.Map,
 paths: Paths,
 cfg: Config.Loaded,
 node: ?Node.Loaded,
@@ -57,6 +58,7 @@ paused_until_ms: ?i64 = null,
 backoff_ms: i64 = 1000,
 started_ms: i64 = 0,
 quit: bool = false,
+retreated: bool = false,
 state: State = .{},
 gw_buf: [16]u8 = undefined,
 
@@ -127,6 +129,22 @@ pub fn firewallUp(gpa: Allocator, io: std.Io, env: *const std.process.Environ.Ma
         log.err("防火墙加载失败 {s}", .{nft.lastError()});
         return err;
     };
+}
+
+/// 另一套 kill-switch 出现后让出网络 删掉 wslb 表和黑洞默认路由 不碰它的路由
+pub fn retreat(gpa: Allocator, io: std.Io, env: *const std.process.Environ.Map, sock: *netlink.Socket) void {
+    var nft: Nft = .init(gpa, io, env);
+    if (nft.available()) {
+        nft.exec("delete table " ++ firewall.table ++ "\n") catch {};
+    }
+    var snap = lan.Snapshot.take(gpa, sock) catch return;
+    defer snap.deinit();
+    const null_link = snap.linkByName(lan.null_if) orelse return;
+    for (snap.routes) |r| {
+        if (r.table == netlink.TABLE_MAIN and r.isDefault() and r.oif == null_link.index) {
+            sock.routeDelete(r) catch {};
+        }
+    }
 }
 
 pub fn allowOf(cfg: Config, node_ip: ?[]const u8) firewall.Allow {
@@ -275,6 +293,7 @@ pub fn run(gpa: Allocator, io: std.Io, env: *const std.process.Environ.Map) !voi
     var g: Guard = .{
         .gpa = gpa,
         .io = io,
+        .env = env,
         .paths = paths,
         .cfg = cfg,
         .node = loadNode(gpa, io, paths),
@@ -359,7 +378,9 @@ pub fn run(gpa: Allocator, io: std.Io, env: *const std.process.Environ.Map) !voi
             }
         }
         if (g.quit) {
-            log.info("按请求退出 防火墙与黑洞保留", .{});
+            if (!g.retreated) {
+                log.info("按请求退出 防火墙与黑洞保留", .{});
+            }
             g.stopSingbox();
             return;
         }
@@ -546,6 +567,17 @@ fn handleRequest(g: *Guard, conn: Control.Conn, req: []const u8) void {
 }
 
 fn reconcile(g: *Guard) !void {
+    if (g.quit) {
+        return;
+    }
+    if (try foreignPresent(g.gpa, &g.sock, g.cfg.value)) |name| {
+        log.warn("另一套 kill-switch 的网卡 {s} 出现 让出网络并退出", .{name});
+        g.stopSingbox();
+        retreat(g.gpa, g.io, g.env, &g.sock);
+        g.quit = true;
+        g.retreated = true;
+        return;
+    }
     const res = try enforce(g.gpa, &g.sock, g.cfg.value, g.nodeIp());
     g.state.reconciles += 1;
     g.state.routes_removed += res.removed;
