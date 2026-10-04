@@ -2,6 +2,7 @@ const std = @import("std");
 const Config = @import("Config.zig");
 const Ctx = @import("Ctx.zig");
 const fsx = @import("../fsx.zig");
+const ini = @import("ini");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -194,7 +195,7 @@ fn setLocaltime(w: Writer, a: Allocator, tz: []const u8) !void {
 fn setWslTime(w: Writer, a: Allocator, managed: bool) !void {
     var buf: [512]u8 = undefined;
     const old = (try fsx.readOptional(w.io, a, w.path(&buf, "/etc/wsl.conf"), 1 << 16)) orelse "";
-    const new = try fsx.setIni(a, old, "time", "useWindowsTimezone", if (managed) "false" else "true");
+    const new = try ini.set(a, old, "time", "useWindowsTimezone", if (managed) "false" else "true");
     if (!std.mem.eql(u8, old, new)) {
         try w.write("/etc/wsl.conf", new);
     }

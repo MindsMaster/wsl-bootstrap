@@ -5,6 +5,7 @@ const Ctx = @import("Ctx.zig");
 const Guard = @import("../net/Guard.zig");
 const firefox = @import("firefox.zig");
 const fsx = @import("../fsx.zig");
+const ini = @import("ini");
 const hide_claude = @import("hide_claude.zig");
 const identity = @import("identity.zig");
 const netlink = @import("../net/netlink.zig");
@@ -154,7 +155,7 @@ fn writeWslConf(ctx: *Ctx, user: []const u8) !void {
         .{ "interop", "appendWindowsPath", "true" },
     };
     for (keys) |k| {
-        text = try fsx.setIni(ctx.arena, text, k[0], k[1], k[2]);
+        text = try ini.set(ctx.arena, text, k[0], k[1], k[2]);
     }
     try ctx.write("/etc/wsl.conf", text, 0o644);
     ctx.ok("systemd 默认用户 {s} resolv.conf 不再由 WSL 生成", .{user});
