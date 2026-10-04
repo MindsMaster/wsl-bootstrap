@@ -82,6 +82,7 @@ singbox_running() { local p; p=$(singbox_pid); [[ -n $p && $p != 0 ]] && kill -0
 pid_changed() { local p; p=$(singbox_pid); [[ -n $p && $p != 0 && $p != "$1" ]]; }
 guard_alive() { local s; s=$("$BIN" status --json 2>/dev/null) || true; [[ $s == *'"guard": true'* ]]; }
 guard_gone() { ! guard_alive; }
+state_field() { "$BIN" status --json | python3 -c "import json,sys; print(json.load(sys.stdin)['$1'])"; }
 routes_snapshot() { ip -4 route show table main; ip -br link | awk '{print $1}' | sort; }
 
 ip link set lo up
@@ -189,7 +190,42 @@ sleep 1
 old=$(singbox_pid)
 if wait_for 12000 pid_changed "$old"; then ok "探测连续失败 ${ELAPSED}ms 后重启 sing-box"; else bad "探测失败没有触发重启"; fi
 check "状态里记录了健康重启" bash -c "\"$BIN\" status --json | grep -q '\"health_restarts\": [1-9]'"
+
+echo "隧道健康探测 经本地 DNS 应答"
+cat >"$WORK/dns.py" <<'EOF'
+import socket, sys
+mode_file = sys.argv[1]
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.bind(("0.0.0.0", 53))
+while True:
+    data, addr = s.recvfrom(512)
+    mode = open(mode_file).read().strip()
+    if mode == "silent":
+        continue
+    rcode = 3 if mode == "nxdomain" else 2
+    s.sendto(data[:2] + bytes([0x81, 0x80 | rcode]) + data[4:6] + bytes(6) + data[12:], addr)
+EOF
+echo nxdomain >"$WORK/dns-mode"
+python3 "$WORK/dns.py" "$WORK/dns-mode" &
+DNS_PID=$!
+"$BIN" config set remote-dns 192.168.50.10 >/dev/null
+sleep 5
+restarts=$(state_field health_restarts)
+check "NXDOMAIN 应答算作隧道正常" test "$(state_field health_failures)" == 0
+check "记录了最近一次探测通过" test "$(state_field health_ok_age_s)" -ge 0
+sleep 4
+check "应答正常时不重启 sing-box" test "$(state_field health_restarts)" == "$restarts"
+old=$(singbox_pid)
+echo servfail >"$WORK/dns-mode"
+if wait_for 12000 pid_changed "$old"; then ok "SERVFAIL ${ELAPSED}ms 后重启 sing-box"; else bad "SERVFAIL 没有触发重启"; fi
+echo nxdomain >"$WORK/dns-mode"
+sleep 4
+old=$(singbox_pid)
+echo silent >"$WORK/dns-mode"
+if wait_for 15000 pid_changed "$old"; then ok "无应答 ${ELAPSED}ms 后重启 sing-box"; else bad "超时没有触发重启"; fi
+kill "$DNS_PID"
 "$BIN" config set health-interval 0 >/dev/null
+"$BIN" config set remote-dns 8.8.8.8 >/dev/null
 
 echo "守护进程退出"
 kill -TERM "$DAEMON"
