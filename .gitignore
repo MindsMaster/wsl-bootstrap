@@ -1,0 +1,6 @@
+linux/vendor/
+*.log
+.zig-cache/
+zig-out/
+zig-pkg/
+linux/bin/
