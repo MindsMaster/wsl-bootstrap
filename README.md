@@ -39,6 +39,7 @@
 - 防火墙表被删，或被换成兜底规则，守护进程收到 nftables 事件后几十毫秒内换回。
 - 每 30 秒经隧道查询一个随机子域名，必须收到上游回包才算通。连续 3 次失败就自动重启 sing-box。
 - 同一个 VM 里只允许一个守护进程。检测到另一套 kill-switch 的网卡（默认 `seattle0` `seattle-null`）时，守护进程和开机兜底都拒绝改动网络。
+- 另一套 kill-switch 后启动时，wslb 会让出网络：删掉自己的防火墙表和黑洞默认路由，守护进程退出。交接期间由对方的规则接管。
 
 ## 时区 语言 对时
 
@@ -94,8 +95,8 @@ tools/release.sh 0.2.0              # 打网络发行版并编进 dist/wslb-0.2.
 
 | 脚本 | 内容 |
 |---|---|
-| `tests/netns.sh` | 在 `unshare -rn` 里跑 49 项，见下 |
-| `tests/netdistro.sh` | 解包 `wslb-net` 产物，在隔离命名空间里 chroot 运行，真实 sing-box 建立 `wslb0` 与策略路由 |
+| `tests/netns.sh` | 在 `unshare -rn` 里跑 57 项，见下 |
+| `tests/netdistro.sh` | 解包 `wslb-net` 产物，在隔离命名空间里 chroot 运行。真实 sing-box 建立 `wslb0` 与策略路由；节点不通时，探测经真实 sing-box 判定失败并重启 |
 | `tests/provision.sh ubuntu\|debian` | 把官方 WSL 镜像解包后 chroot 跑完整安装流程，需要宿主装 uidmap |
 
 `tests/netns.sh` 覆盖的场景：
@@ -103,9 +104,11 @@ tools/release.sh 0.2.0              # 打网络发行版并编进 dist/wslb-0.2.
 - 注入默认路由、泄露探测、换网；
 - 防火墙被删或被换、sing-box 崩溃、黑洞网卡被删；
 - 健康探测的正常应答、SERVFAIL 与超时；
-- 停用与启用。
+- 停用与启用；
+- seattle 这类外部 kill-switch 后启动时，守护进程和开机兜底让出网络。
 
 还没在真机上验证的：
+- Windows 控制台后端：`wslb.exe` 的界面只在 Linux 的 pty 里走过，真实控制台的按键、中文输入和窗口缩放没跑过；
 - `wsl --import` 之后，网络发行版的开机命令能否正常运行；
 - `wslb-link` 能否在 systemd 服务里调用 `wsl.exe`；
 - 没有终端开着时，网络发行版会不会被 WSL 停掉；
