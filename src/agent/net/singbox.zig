@@ -1,5 +1,5 @@
 const std = @import("std");
-const Config = @import("../Config.zig");
+const Config = @import("Config.zig");
 const Node = @import("Node.zig");
 const ip4 = @import("ip4.zig");
 

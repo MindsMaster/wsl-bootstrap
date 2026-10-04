@@ -1,5 +1,5 @@
 const std = @import("std");
-const Config = @import("../Config.zig");
+const Config = @import("Config.zig");
 const ip4 = @import("ip4.zig");
 const netlink = @import("netlink.zig");
 const singbox = @import("singbox.zig");
@@ -8,9 +8,6 @@ const Allocator = std.mem.Allocator;
 
 pub const null_if = "wslb-null";
 pub const null_addr = "169.254.254.1";
-
-/// 旧版手工 kill-switch 的网卡 同一 VM 内视为冲突
-pub const legacy_ifs = [_][]const u8{ "seattle0", "seattle-null" };
 
 pub const Snapshot = struct {
     arena: std.heap.ArenaAllocator,
@@ -104,8 +101,8 @@ pub fn excluded(cfg: Config, snap: *const Snapshot, index: u32) bool {
     if (std.mem.eql(u8, name, "lo") or std.mem.eql(u8, name, singbox.tun_if) or std.mem.eql(u8, name, null_if)) {
         return true;
     }
-    for (legacy_ifs) |l| {
-        if (std.mem.eql(u8, name, l)) {
+    for (cfg.foreign_ifaces) |f| {
+        if (std.mem.eql(u8, name, f)) {
             return true;
         }
     }
@@ -194,6 +191,16 @@ pub fn detect(gpa: Allocator, cfg: Config, snap: *const Snapshot, node_ip: ?ip4.
     for (snap.links) |*link| {
         if (!excluded(cfg, snap, link.index) and inLan(snap, l, link.index)) {
             return .of(link, gw, 0);
+        }
+    }
+    return null;
+}
+
+/// 同一 VM 里另一套 kill-switch 的网卡 两套同时改路由会互相破坏
+pub fn foreign(cfg: Config, snap: *const Snapshot) ?[]const u8 {
+    for (cfg.foreign_ifaces) |name| {
+        if (snap.linkByName(name) != null) {
+            return name;
         }
     }
     return null;

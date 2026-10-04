@@ -1,28 +1,51 @@
 const std = @import("std");
-const Config = @import("../Config.zig");
+const Nft = @import("Nft.zig");
 const singbox = @import("singbox.zig");
 
 const Allocator = std.mem.Allocator;
 
-pub const table = "wslb";
+pub const table = "inet wslb";
 
 /// mirrored 模式下访问 Windows 127.0.0.1 走这块网卡
 const windows_loopback_if = "loopback0";
 /// WSL dnsTunneling 的解析地址 走它会绕过隧道
 const wsl_dns_tunnel = "10.255.255.254";
 
-/// 先 add 再 delete 让表不存在时也能原子替换
-pub fn render(w: *std.Io.Writer, cfg: Config, node_ip: ?[]const u8) std.Io.Writer.Error!void {
-    try w.print("add table inet {s}\ndelete table inet {s}\n", .{ table, table });
-    try w.print("table inet {s} {{\n", .{table});
+pub const Owner = enum {
+    /// 守护进程的完整规则 含节点放行
+    guard,
+    /// 用户发行版开机时的兜底规则 不知道节点 只在表不存在时创建
+    boot,
+
+    fn comment(o: Owner) []const u8 {
+        return switch (o) {
+            .guard => "wslb guard",
+            .boot => "wslb boot",
+        };
+    }
+};
+
+pub const Allow = struct {
+    node_ip: ?[]const u8 = null,
+    lan_cidr: []const u8 = "",
+    local_cidrs: []const []const u8,
+};
+
+pub fn render(w: *std.Io.Writer, owner: Owner, allow: Allow) std.Io.Writer.Error!void {
+    switch (owner) {
+        // 先 add 再 delete 让表不存在时也能原子替换
+        .guard => try w.print("add table {s}\ndelete table {s}\ntable {s} {{\n\tcomment \"{s}\"\n", .{ table, table, table, owner.comment() }),
+        // 表已存在时 create 失败 整批作废 不会覆盖守护进程的规则
+        .boot => try w.print("create table {s} {{ comment \"{s}\"\n}}\ntable {s} {{\n", .{ table, owner.comment(), table }),
+    }
     try w.writeAll("\tset allow4 {\n\t\ttype ipv4_addr\n\t\tflags interval\n\t\tauto-merge\n\t\telements = { 127.0.0.0/8");
-    if (node_ip) |ip| {
+    if (allow.node_ip) |ip| {
         try w.print(", {s}/32", .{ip});
     }
-    if (cfg.lan_cidr.len != 0) {
-        try w.print(", {s}", .{cfg.lan_cidr});
+    if (allow.lan_cidr.len != 0) {
+        try w.print(", {s}", .{allow.lan_cidr});
     }
-    for (cfg.local_cidrs) |c| {
+    for (allow.local_cidrs) |c| {
         try w.print(", {s}", .{c});
     }
     try w.writeAll(" }\n\t}\n");
@@ -41,85 +64,50 @@ pub fn render(w: *std.Io.Writer, cfg: Config, node_ip: ?[]const u8) std.Io.Write
     try w.writeAll("}\n");
 }
 
-const Ctx = opaque {};
-
-pub const Nft = struct {
-    lib: std.DynLib,
-    ctx: *Ctx,
-    run: *const fn (*Ctx, [*:0]const u8) callconv(.c) c_int,
-    free: *const fn (*Ctx) callconv(.c) void,
-    get_error: *const fn (*Ctx) callconv(.c) ?[*:0]const u8,
-    get_output: *const fn (*Ctx) callconv(.c) ?[*:0]const u8,
-
-    /// 运行时 dlopen 缺库时守护进程仍能维持路由黑洞
-    pub fn open(path: []const u8) !Nft {
-        var lib = try std.DynLib.open(path);
-        errdefer lib.close();
-        const new = lib.lookup(*const fn (u32) callconv(.c) ?*Ctx, "nft_ctx_new") orelse return error.MissingSymbol;
-        const buffer_error = lib.lookup(*const fn (*Ctx) callconv(.c) c_int, "nft_ctx_buffer_error") orelse return error.MissingSymbol;
-        const buffer_output = lib.lookup(*const fn (*Ctx) callconv(.c) c_int, "nft_ctx_buffer_output") orelse return error.MissingSymbol;
-        var nft: Nft = .{
-            .lib = lib,
-            .ctx = undefined,
-            .run = lib.lookup(@FieldType(Nft, "run"), "nft_run_cmd_from_buffer") orelse return error.MissingSymbol,
-            .free = lib.lookup(@FieldType(Nft, "free"), "nft_ctx_free") orelse return error.MissingSymbol,
-            .get_error = lib.lookup(@FieldType(Nft, "get_error"), "nft_ctx_get_error_buffer") orelse return error.MissingSymbol,
-            .get_output = lib.lookup(@FieldType(Nft, "get_output"), "nft_ctx_get_output_buffer") orelse return error.MissingSymbol,
-        };
-        nft.ctx = new(0) orelse return error.NftContext;
-        _ = buffer_error(nft.ctx);
-        _ = buffer_output(nft.ctx);
-        return nft;
-    }
-
-    pub fn deinit(nft: *Nft) void {
-        nft.free(nft.ctx);
-        nft.lib.close();
-    }
-
-    pub fn exec(nft: *Nft, cmd: [:0]const u8) !void {
-        if (nft.run(nft.ctx, cmd.ptr) != 0) {
-            return error.NftRejected;
-        }
-    }
-
-    pub fn lastError(nft: *Nft) []const u8 {
-        return std.mem.span(nft.get_error(nft.ctx) orelse "");
-    }
-
-    pub fn tablePresent(nft: *Nft) bool {
-        nft.exec("list table inet " ++ table) catch return false;
-        _ = nft.get_output(nft.ctx);
-        return true;
-    }
-};
-
-pub fn defaultLibPath(env: *const std.process.Environ.Map) []const u8 {
-    return env.get("WSLB_LIBNFT") orelse "libnftables.so.1";
-}
-
-pub fn apply(gpa: Allocator, nft: *Nft, cfg: Config, node_ip: ?[]const u8) !void {
+pub fn apply(gpa: Allocator, nft: *Nft, owner: Owner, allow: Allow) !void {
     var out: std.Io.Writer.Allocating = .init(gpa);
     defer out.deinit();
-    try render(&out.writer, cfg, node_ip);
-    const text = try out.toOwnedSliceSentinel(0);
-    defer gpa.free(text);
-    try nft.exec(text);
+    try render(&out.writer, owner, allow);
+    try nft.exec(out.written());
 }
 
-pub fn remove(nft: *Nft) !void {
-    if (!nft.tablePresent()) {
+/// 当前表的归属 表不存在返回 null
+pub fn currentOwner(gpa: Allocator, nft: *Nft) !?Owner {
+    const listing = (try nft.listTable(gpa, table)) orelse return null;
+    defer gpa.free(listing);
+    for ([_]Owner{ .guard, .boot }) |o| {
+        var buf: [64]u8 = undefined;
+        const needle = std.fmt.bufPrint(&buf, "comment \"{s}\"", .{o.comment()}) catch unreachable;
+        if (std.mem.indexOf(u8, listing, needle) != null) {
+            return o;
+        }
+    }
+    return error.ForeignTable;
+}
+
+pub fn remove(gpa: Allocator, nft: *Nft) !void {
+    if (try currentOwner(gpa, nft) == null) {
         return;
     }
-    try nft.exec("delete table inet " ++ table);
+    try nft.exec("delete table " ++ table ++ "\n");
 }
 
-test "ruleset shape" {
+test "guard ruleset" {
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
-    try render(&out.writer, .{ .lan_cidr = "192.168.8.0/24" }, "45.42.142.185");
+    try render(&out.writer, .guard, .{ .node_ip = "45.42.142.185", .lan_cidr = "192.168.8.0/24", .local_cidrs = &.{"10.0.0.0/8"} });
     const text = out.written();
-    try std.testing.expect(std.mem.indexOf(u8, text, "policy drop") != null);
+    try std.testing.expect(std.mem.startsWith(u8, text, "add table inet wslb\ndelete table inet wslb\n"));
+    try std.testing.expect(std.mem.indexOf(u8, text, "comment \"wslb guard\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "45.42.142.185/32, 192.168.8.0/24, 10.0.0.0/8") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "oifname \"wslb0\" accept") != null);
+}
+
+test "boot ruleset never replaces" {
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try render(&out.writer, .boot, .{ .local_cidrs = &.{} });
+    const text = out.written();
+    try std.testing.expect(std.mem.startsWith(u8, text, "create table inet wslb"));
+    try std.testing.expect(std.mem.indexOf(u8, text, "delete") == null);
 }

@@ -226,7 +226,7 @@ identity_apply() {
 egress_finalize() {
   step "启动出口隧道"
   systemctl daemon-reload
-  systemctl restart wslb-firewall.service || warn "防火墙层暂未加载 libnftables 稍后经隧道安装"
+  systemctl restart wslb-firewall.service || warn "防火墙层暂未加载 nftables 稍后经隧道安装"
   systemctl restart wslb-guard.service
   local info=""
   for _ in $(seq 1 40); do
@@ -240,14 +240,14 @@ egress_finalize() {
   echo "$info"
 }
 
-# libnftables 经隧道安装 之前只有路由黑洞一层
+# nftables 经隧道安装 之前只有路由黑洞一层
 egress_firewall_layer() {
   step "nftables 出站白名单"
-  apt_quiet install libnftables1
+  apt_quiet install nftables
   systemctl restart wslb-firewall.service
   systemctl restart wslb-guard.service
   sleep 3
-  if wslb-agent status --json | grep -q '"firewall": true'; then
+  if wslb-agent status --json | grep -q '"firewall": "guard"'; then
     ok "防火墙层已加载"
   else
     warn "防火墙层未加载，仅靠路由黑洞。查看: journalctl -u wslb-agent"

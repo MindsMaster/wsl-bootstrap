@@ -1,30 +1,29 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
-    // glibc 2.36 对应 Debian 12 运行时 dlopen 系统的 libnftables
+    // 静态 musl 同一个二进制可在 Ubuntu Debian Alpine 里运行
     const target = b.standardTargetOptions(.{
-        .default_target = .{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .gnu, .glibc_version = .{ .major = 2, .minor = 36, .patch = 0 } },
+        .default_target = .{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .musl },
     });
     const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSafe });
 
     const options = b.addOptions();
-    options.addOption([]const u8, "version", b.option([]const u8, "version", "版本号") orelse "0.1.0-dev");
+    options.addOption([]const u8, "version", b.option([]const u8, "version", "版本号") orelse "0.2.0-dev");
 
-    const mod = b.createModule(.{
+    const agent_mod = b.createModule(.{
         .root_source_file = b.path("src/agent/main.zig"),
         .target = target,
         .optimize = optimize,
-        .link_libc = true,
     });
-    mod.addOptions("build_options", options);
+    agent_mod.addOptions("build_options", options);
 
-    const exe = b.addExecutable(.{ .name = "wslb-agent", .root_module = mod });
-    b.installArtifact(exe);
+    const agent = b.addExecutable(.{ .name = "wslb-agent", .root_module = agent_mod });
+    b.installArtifact(agent);
 
-    const run = b.addRunArtifact(exe);
+    const run = b.addRunArtifact(agent);
     run.addPassthruArgs();
     b.step("run", "运行 wslb-agent").dependOn(&run.step);
 
-    const tests = b.addTest(.{ .root_module = mod });
+    const tests = b.addTest(.{ .root_module = agent_mod });
     b.step("test", "单元测试").dependOn(&b.addRunArtifact(tests).step);
 }

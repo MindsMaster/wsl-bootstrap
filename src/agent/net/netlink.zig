@@ -50,6 +50,8 @@ pub const Groups = struct {
     pub const LINK: u32 = 0x1;
     pub const IPV4_IFADDR: u32 = 0x10;
     pub const IPV4_ROUTE: u32 = 0x40;
+    /// NETLINK_NETFILTER 下的 NFNLGRP_NFTABLES 第 7 组
+    pub const NFTABLES: u32 = 1 << 6;
 };
 
 const Header = extern struct {
@@ -212,7 +214,16 @@ pub const Socket = struct {
     buf: [65536]u8 align(4) = undefined,
 
     pub fn open(groups: u32) Error!Socket {
-        const rc = linux.socket(linux.AF.NETLINK, linux.SOCK.RAW | linux.SOCK.CLOEXEC, linux.NETLINK.ROUTE);
+        return openProtocol(linux.NETLINK.ROUTE, groups);
+    }
+
+    /// 只用来收 nftables 变更通知 不发请求
+    pub fn openNftEvents() Error!Socket {
+        return openProtocol(linux.NETLINK.NETFILTER, Groups.NFTABLES);
+    }
+
+    fn openProtocol(protocol: u32, groups: u32) Error!Socket {
+        const rc = linux.socket(linux.AF.NETLINK, linux.SOCK.RAW | linux.SOCK.CLOEXEC, protocol);
         if (linux.errno(rc) != .SUCCESS) {
             return error.NetlinkSocket;
         }

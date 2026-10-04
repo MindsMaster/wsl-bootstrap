@@ -1,6 +1,6 @@
 const std = @import("std");
 const Config = @import("Config.zig");
-const fsx = @import("fsx.zig");
+const fsx = @import("../fsx.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
