@@ -67,19 +67,24 @@ bash 和 PowerShell 用 `#`，规则相同。
 - 花括号块不写在一行内
 - 文件名与主类型一致：结构体为主的文件用 `PascalCase.zig`，函数集合用 `snake_case.zig`
 - bash 用 `set -euo pipefail`，过 `shellcheck -S warning`
-- PowerShell 脚本保存为带 BOM 的 UTF-8，兼容 Windows PowerShell 5.1
+- 接口只用在运行时有两种以上实现的地方：发行版策略 `distro/Os.zig`，命令执行 `manager/Runner.zig`，终端后端 `manager/term/`。固定顺序的流程写在一个文件里，不按步骤拆文件
+- 目录先按端分 `src/agent` `src/manager` `src/shared`，再按领域分 `net` `distro` `page` `job`，不按技术层分
 
 # 改名与移动
 
-- 改名后全仓搜一遍字符串、systemd 单元、安装脚本里有没有同名引用
+- 改名后全仓搜一遍字符串、systemd 单元、测试脚本里有没有同名引用
 - 格式整理、改名与逻辑改动分开提交
 
 # 验证
 
 - 改 Zig 代码后至少 `zig build` 和 `zig build test`。仓库在 Windows 盘上时 Zig 无法在 virtiofs 里重命名缓存目录，需设 `ZIG_LOCAL_CACHE_DIR=$HOME/.cache/zig-local/wslb`
-- 发布用二进制：`zig build -Drelease=true -p linux`，输出 `linux/bin/wslb-agent` 供安装器使用
-- 改到路由、防火墙、kill-switch 时跑 `tests/netns.sh`。它在 `unshare -rn` 隔离的网络命名空间里运行，不碰宿主网络
+- 改到路由、防火墙、守护进程时跑 `tests/netns.sh`。它在 `unshare -rn` 隔离的网络命名空间里运行，不碰宿主网络
+- 改到网络发行版打包时跑 `tools/build-netdistro.sh` 再跑 `tests/netdistro.sh`，在隔离命名空间里用产物自带的 nft 与 sing-box
+- 改到发行版安装流程时跑 `tests/provision.sh ubuntu` 和 `tests/provision.sh debian`。需要宿主装 uidmap，apt 走宿主网络，宿主网络必须已受保护
+- 改到管理器时跑 `zig build test`，再用 `-Dmanager-target=x86_64-linux-musl` 编出本机版本在 pty 里走一遍界面，只按不触发操作的键
+- 发布：`tools/release.sh 版本号`，产物 `dist/wslb-版本号.exe`
 - 不在宿主网络命名空间里启动守护进程或加载规则。所有 WSL 发行版共享同一网络栈
+- 不在本机执行 `wsl --import` `--install` `--update` `--shutdown` `--unregister`，不写 `.wslconfig`。这些交给用户通过 wslb.exe 自己操作
 - 失败先在改动前的基线上复现一次，分清是否本次引入
 
 # 措辞
@@ -98,7 +103,7 @@ bash 和 PowerShell 用 `#`，规则相同。
 格式：`type(scope): 中文一句话`，不带正文，不加 Co-Authored-By、Claude-Session 之类的署名尾行。
 
 - type：feat / fix / perf / refactor / test / chore / docs
-- scope：受影响的部分，如 egress、firewall、netlink、identity、installer、firefox、cli；跨部分可省略
+- scope：受影响的部分，如 egress、netdistro、installer、identity、firefox、manager；跨部分可省略
 - 一句话写成简短书面的名词短语，说结果不说机制。需要断开时用空格，不用逗号往后追加
 - 修 bug 点名坏掉的对象：`fix(firewall): 修复 loopback0 回包被丢弃问题`
 - 一个 commit 一件事。多个不相关改动分开提
