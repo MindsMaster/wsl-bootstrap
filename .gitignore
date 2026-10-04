@@ -4,3 +4,4 @@ linux/vendor/
 zig-out/
 zig-pkg/
 linux/bin/
+dist/

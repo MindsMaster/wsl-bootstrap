@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # Alpine minirootfs 加 nftables 网络发行版和集成测试共用
-#   alpine_root <目录>   目录不存在时下载 校验 解包 装 nftables
+#   alpine_root <目录> <下载缓存目录>   目录里没有 nft 时下载 校验 解包 装 nftables
 
 ALPINE_VERSION=3.24.2
 ALPINE_BRANCH=v3.24
@@ -8,11 +8,11 @@ ALPINE_SHA256=c5ca053cfe1d85c5b96dff8b9bc57045f7f184a30ffb6b65776409ca90388677
 ALPINE_PACKAGES=(nftables)
 
 alpine_root() {
-  local root=$1 tarball
+  local root=$1 cache=$2 tarball
   [[ -x $root/usr/sbin/nft ]] && return 0
-  tarball=$(dirname "$root")/alpine-minirootfs-$ALPINE_VERSION-x86_64.tar.gz
+  tarball=$cache/alpine-minirootfs-$ALPINE_VERSION-x86_64.tar.gz
   if [[ ! -f $tarball ]]; then
-    mkdir -p "$(dirname "$root")"
+    mkdir -p "$cache"
     curl -fsSL --retry 3 -o "$tarball.part" \
       "https://dl-cdn.alpinelinux.org/alpine/$ALPINE_BRANCH/releases/x86_64/alpine-minirootfs-$ALPINE_VERSION-x86_64.tar.gz"
     echo "$ALPINE_SHA256  $tarball.part" | sha256sum -c --quiet -
