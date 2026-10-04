@@ -44,9 +44,11 @@ pub fn poll(t: *Terminal, timeout_ms: u32) !Input {
     var input: Input = .{};
     const n, input.resized = try t.backend.read(t.pending[t.pending_len..], timeout_ms);
     t.pending_len += n;
+    // 序列可能分两次读到 这次有新字节时不把末尾的半截当成 Esc
+    const final = n == 0;
     var off: usize = 0;
     while (input.len < input.keys.len) {
-        const k, const used = keys.next(t.pending[off..t.pending_len], true) orelse break;
+        const k, const used = keys.next(t.pending[off..t.pending_len], final) orelse break;
         input.keys[input.len] = k;
         input.len += 1;
         off += used;
