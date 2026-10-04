@@ -90,5 +90,9 @@ test {
     _ = @import("net/lan.zig");
     _ = @import("net/netlink.zig");
     _ = @import("net/singbox.zig");
+    _ = @import("distro/Os.zig");
+    _ = @import("distro/firefox.zig");
     _ = @import("distro/identity.zig");
+    _ = @import("distro/os/debian.zig");
+    _ = @import("distro/provision.zig");
 }

@@ -1,0 +1,11 @@
+[Unit]
+Description=wslb: follow the exit node timezone once the tunnel is up
+After=wslb-link.service
+Wants=wslb-link.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/wslb-agent identity refresh --wait 90
+
+[Install]
+WantedBy=multi-user.target

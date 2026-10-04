@@ -1,5 +1,5 @@
 [Unit]
-Description=wslb-agent: timezone, locale and NTP identity before services start
+Description=wslb: timezone, locale and NTP identity before services start
 DefaultDependencies=no
 After=local-fs.target
 Before=sysinit.target

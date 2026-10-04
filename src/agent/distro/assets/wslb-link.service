@@ -1,0 +1,12 @@
+[Unit]
+Description=wslb: keep the network distro running
+After=wslb-boot.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/wslb-agent link
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -1,5 +1,6 @@
 const std = @import("std");
 const Config = @import("Config.zig");
+const Ctx = @import("Ctx.zig");
 const fsx = @import("../fsx.zig");
 
 const Allocator = std.mem.Allocator;
@@ -178,15 +179,6 @@ pub fn apply(gpa: Allocator, io: Io, root: []const u8, id: Config.Identity) !voi
             w.remove("/etc/chrony/sources.d/wslb-agent.sources");
         }
     }
-
-    if (root.len == 0) {
-        if (plan.locale) |l| {
-            ensureLocale(gpa, io, l);
-        }
-        if (plan.ntp) {
-            runQuiet(gpa, io, &.{ "chronyc", "reload", "sources" });
-        }
-    }
 }
 
 fn setLocaltime(w: Writer, a: Allocator, tz: []const u8) !void {
@@ -202,78 +194,40 @@ fn setLocaltime(w: Writer, a: Allocator, tz: []const u8) !void {
 fn setWslTime(w: Writer, a: Allocator, managed: bool) !void {
     var buf: [512]u8 = undefined;
     const old = (try fsx.readOptional(w.io, a, w.path(&buf, "/etc/wsl.conf"), 1 << 16)) orelse "";
-    const new = try setIni(a, old, "time", "useWindowsTimezone", if (managed) "false" else "true");
+    const new = try fsx.setIni(a, old, "time", "useWindowsTimezone", if (managed) "false" else "true");
     if (!std.mem.eql(u8, old, new)) {
         try w.write("/etc/wsl.conf", new);
     }
 }
 
-pub fn setIni(a: Allocator, text: []const u8, section: []const u8, key: []const u8, value: []const u8) ![]const u8 {
-    var out: std.Io.Writer.Allocating = .init(a);
-    var in_section = false;
-    var done = false;
-    var lines = std.mem.splitScalar(u8, text, '\n');
-    while (lines.next()) |line| {
-        if (lines.peek() == null and line.len == 0) {
-            break;
-        }
-        const t = std.mem.trim(u8, line, " \t\r");
-        if (t.len > 1 and t[0] == '[' and t[t.len - 1] == ']') {
-            if (in_section and !done) {
-                try out.writer.print("{s}={s}\n", .{ key, value });
-                done = true;
-            }
-            in_section = std.ascii.eqlIgnoreCase(t[1 .. t.len - 1], section);
-        } else if (in_section and !done) {
-            const eq = std.mem.indexOfScalar(u8, t, '=');
-            if (eq) |i| {
-                if (std.ascii.eqlIgnoreCase(std.mem.trim(u8, t[0..i], " \t"), key)) {
-                    try out.writer.print("{s}={s}\n", .{ key, value });
-                    done = true;
-                    continue;
-                }
-            }
-        }
-        try out.writer.print("{s}\n", .{line});
-    }
-    if (!done) {
-        if (in_section) {
-            try out.writer.print("{s}={s}\n", .{ key, value });
-        } else {
-            if (out.written().len != 0) {
-                try out.writer.writeAll("\n");
-            }
-            try out.writer.print("[{s}]\n{s}={s}\n", .{ section, key, value });
+/// 写完文件后要执行的命令 测试时写到临时根目录 不调用
+pub fn activate(ctx: *Ctx, id: Config.Identity) void {
+    const plan = Plan.of(id);
+    if (plan.locale) |l| {
+        if (!localeInstalled(ctx, l)) {
+            ctx.os.generateLocale(ctx, l) catch |err| log.warn("生成 locale {s} 失败 {s}", .{ l, @errorName(err) });
         }
     }
-    return out.written();
+    if (plan.ntp) {
+        _ = ctx.succeeds(&.{ "chronyc", "reload", "sources" });
+    }
 }
 
-fn runQuiet(gpa: Allocator, io: Io, argv: []const []const u8) void {
-    const r = std.process.run(gpa, io, .{ .argv = argv }) catch return;
-    gpa.free(r.stdout);
-    gpa.free(r.stderr);
-}
-
-fn ensureLocale(gpa: Allocator, io: Io, locale: []const u8) void {
-    const r = std.process.run(gpa, io, .{ .argv = &.{ "locale", "-a" } }) catch return;
-    defer gpa.free(r.stdout);
-    defer gpa.free(r.stderr);
+fn localeInstalled(ctx: *Ctx, locale: []const u8) bool {
+    const r = std.process.run(ctx.arena, ctx.io, .{ .argv = &.{ "locale", "-a" } }) catch return false;
     var want_buf: [64]u8 = undefined;
     const want = std.ascii.lowerString(&want_buf, locale[0..@min(locale.len, 64)]);
     // locale -a 输出 en_US.utf8 而配置写 en_US.UTF-8
-    const norm = std.mem.replaceOwned(u8, gpa, want, "utf-8", "utf8") catch return;
-    defer gpa.free(norm);
+    const norm = std.mem.replaceOwned(u8, ctx.arena, want, "utf-8", "utf8") catch return false;
     var lines = std.mem.splitScalar(u8, r.stdout, '\n');
     while (lines.next()) |line| {
         var have_buf: [64]u8 = undefined;
         const have = std.ascii.lowerString(&have_buf, line[0..@min(line.len, 64)]);
         if (std.mem.eql(u8, have, norm)) {
-            return;
+            return true;
         }
     }
-    log.info("生成 locale {s}", .{locale});
-    runQuiet(gpa, io, &.{ "locale-gen", locale });
+    return false;
 }
 
 test "auto without resolved timezone pins UTC" {
@@ -285,18 +239,4 @@ test "langTag" {
     var buf: [32]u8 = undefined;
     try std.testing.expectEqualStrings("en-US", langTag(&buf, "en_US.UTF-8"));
     try std.testing.expectEqualStrings("de-DE", langTag(&buf, "de_DE@euro"));
-}
-
-test "setIni" {
-    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    try std.testing.expectEqualStrings(
-        "[boot]\nsystemd=true\n\n[time]\nuseWindowsTimezone=false\n",
-        try setIni(a, "[boot]\nsystemd=true\n", "time", "useWindowsTimezone", "false"),
-    );
-    try std.testing.expectEqualStrings(
-        "[time]\nuseWindowsTimezone=true\n[user]\ndefault=a\n",
-        try setIni(a, "[time]\nuseWindowsTimezone = false\n[user]\ndefault=a\n", "time", "useWindowsTimezone", "true"),
-    );
 }
