@@ -26,6 +26,33 @@ pub fn exists(io: Io, path: []const u8) bool {
     return true;
 }
 
+/// chattr +i 的开关 返回原先是否不可改 文件系统不支持时视为否
+pub fn setImmutable(path: [:0]const u8, on: bool) !bool {
+    const linux = std.os.linux;
+    const get_flags: u32 = 0x80086601;
+    const set_flags: u32 = 0x40086602;
+    const immutable: u32 = 0x10;
+    const rc = linux.open(path, .{ .ACCMODE = .RDONLY, .NONBLOCK = true, .CLOEXEC = true }, 0);
+    if (linux.errno(rc) != .SUCCESS) {
+        return false;
+    }
+    const fd: i32 = @intCast(rc);
+    defer _ = linux.close(fd);
+    var flags: u32 = 0;
+    if (linux.errno(linux.ioctl(fd, get_flags, @intFromPtr(&flags))) != .SUCCESS) {
+        return false;
+    }
+    const was = flags & immutable != 0;
+    if (was == on) {
+        return was;
+    }
+    flags = if (on) flags | immutable else flags & ~immutable;
+    if (linux.errno(linux.ioctl(fd, set_flags, @intFromPtr(&flags))) != .SUCCESS) {
+        return error.PermissionDenied;
+    }
+    return was;
+}
+
 pub fn ensureDir(io: Io, path: []const u8) !void {
     try Io.Dir.cwd().createDirPath(io, path);
 }

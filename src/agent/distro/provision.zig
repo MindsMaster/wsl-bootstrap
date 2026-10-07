@@ -164,8 +164,13 @@ fn writeWslConf(ctx: *Ctx, user: []const u8) !void {
 /// 解析都被网络发行版的 sing-box 劫持 这里的地址只是让查询进隧道
 fn writeDns(ctx: *Ctx) !void {
     ctx.step("DNS", .{});
+    const locked = try fsx.setImmutable("/etc/resolv.conf", false);
     std.Io.Dir.cwd().deleteFile(ctx.io, "/etc/resolv.conf") catch {};
     try ctx.write("/etc/resolv.conf", "nameserver 1.1.1.1\nnameserver 8.8.8.8\noptions edns0 timeout:2 attempts:2\n", 0o644);
+    if (locked) {
+        _ = try fsx.setImmutable("/etc/resolv.conf", true);
+        ctx.ok("原文件带 chattr +i 写入后照原样锁定", .{});
+    }
     if (fsx.exists(ctx.io, "/etc/systemd")) {
         try ctx.write("/etc/systemd/resolved.conf.d/wslb.conf", @embedFile("assets/resolved.conf"), 0o644);
     }
