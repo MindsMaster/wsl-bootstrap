@@ -174,7 +174,9 @@ fn submitConfig(app: *App, f: *Form) void {
         f.error_text = "找不到 USERPROFILE";
         return;
     }
-    const a = app.gpa;
+    var arena: std.heap.ArenaAllocator = .init(app.gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
     const merged = wslconfig.merge(a, info.wslconfig, .{
         .memory = f.get("memory").text(),
         .processors = f.get("processors").text(),
@@ -184,12 +186,10 @@ fn submitConfig(app: *App, f: *Form) void {
         f.error_text = "合并失败";
         return;
     };
-    defer a.free(merged);
     const backup = wslconfig.write(app.io, a, info.wslconfig_path, info.wslconfig, merged, nowStamp(app.io)) catch {
         f.error_text = "写入失败";
         return;
     };
-    defer if (backup.len != 0) a.free(backup);
     app.closeModal();
     app.setMessage(".wslconfig 已写入 {s} 关闭全部 WSL 后生效", .{if (backup.len != 0) "原文件已备份" else ""});
     app.refresh();

@@ -46,6 +46,7 @@ pub fn current(text: []const u8) Settings {
     };
 }
 
+/// 中间结果不释放 a 用 arena
 pub fn merge(a: Allocator, text: []const u8, s: Settings) ![]const u8 {
     var out = text;
     for (fixed) |k| {
