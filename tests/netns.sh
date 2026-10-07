@@ -167,6 +167,24 @@ check "lan1 默认路由被清除" wait_for 500 only_blackhole_default
 sleep 3
 check "3 秒后仍经 lan1 不回跳" node_via 10.77.0.1 lan1
 
+echo "换节点 默认路由已删光 不配 LAN 网段"
+python3 - "$WSLB_ETC/net.json" <<'PY'
+import json, sys
+c = json.load(open(sys.argv[1]))
+c["lan_cidr"] = ""
+c["lan_gateway"] = ""
+json.dump(c, open(sys.argv[1], "w"))
+PY
+NODE2=198.51.100.7
+"$BIN" node add 'vless://22222222-0000-4000-8000-000000000000@node2.example.com:443?security=tls#n2' --ip "$NODE2" --use >/dev/null
+check "新节点路由沿用 lan1" wait_for 2000 bash -c "ip -4 route show $NODE2/32 | grep -q 'via 10.77.0.1 dev lan1'"
+check "换节点后 sing-box 在运行" wait_for 3000 singbox_running
+check "状态里的上行网卡是 lan1" test "$(state_field uplink)" == lan1
+"$BIN" set-node "vless://u-1@$NODE:443?security=tls&fp=chrome#test" --ip "$NODE" >/dev/null
+check "换回原节点后 sing-box 在运行" wait_for 3000 singbox_running
+"$BIN" config set lan-cidr 192.168.50.0/24 >/dev/null
+"$BIN" config set lan-gateway 192.168.50.1 >/dev/null
+
 echo "防火墙被删或被换"
 "$NFT" delete table inet wslb
 if wait_for 2000 table_owner guard; then ok "被删的防火墙表 ${ELAPSED}ms 内恢复"; else bad "防火墙表未恢复"; fi

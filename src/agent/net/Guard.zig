@@ -61,6 +61,8 @@ quit: bool = false,
 retreated: bool = false,
 state: State = .{},
 gw_buf: [16]u8 = undefined,
+/// state 里的字符串要比 uplink 活得久
+up_buf: [16]u8 = undefined,
 
 const term_signals = [_]linux.SIG{ .TERM, .INT, .HUP };
 
@@ -118,7 +120,7 @@ pub fn firewallUp(gpa: Allocator, io: std.Io, env: *const std.process.Environ.Ma
         return error.ForeignKillswitch;
     }
     hardenSysctls(io);
-    _ = try enforce(gpa, &sock, cfg.value, if (node) |n| n.value.ipAddr() else null);
+    _ = try enforce(gpa, &sock, cfg.value, if (node) |n| n.value.ipAddr() else null, null);
 
     var nft: Nft = .init(gpa, io, env);
     if (!nft.available()) {
@@ -174,14 +176,22 @@ pub const Enforced = struct {
 
 /// 黑洞默认路由 节点直连路由 清除外来默认路由
 /// 先探测上行再删默认路由 实时默认路由是最好的上行线索
-pub fn enforce(gpa: Allocator, sock: *netlink.Socket, cfg: Config, node_ip: ?ip4.Addr) !Enforced {
+/// 默认路由删光后换了节点 新 IP 还没有直连路由 只能沿用 last
+pub fn enforce(gpa: Allocator, sock: *netlink.Socket, cfg: Config, node_ip: ?ip4.Addr, last: ?lan.Uplink) !Enforced {
     var snap = try lan.Snapshot.take(gpa, sock);
     defer snap.deinit();
     if (try ensureBlackhole(gpa, sock, &snap)) {
         snap.deinit();
         snap = try lan.Snapshot.take(gpa, sock);
     }
-    const up = try lan.detect(gpa, cfg, &snap, node_ip);
+    var up = try lan.detect(gpa, cfg, &snap, node_ip);
+    if (up == null) {
+        if (last) |l| {
+            if (snap.linkByIndex(l.index) != null) {
+                up = l;
+            }
+        }
+    }
     if (up) |u| {
         if (node_ip) |ip| {
             try ensureNodeRoute(sock, &snap, u, ip);
@@ -578,7 +588,7 @@ fn reconcile(g: *Guard) !void {
         g.retreated = true;
         return;
     }
-    const res = try enforce(g.gpa, &g.sock, g.cfg.value, g.nodeIp());
+    const res = try enforce(g.gpa, &g.sock, g.cfg.value, g.nodeIp(), g.uplink);
     g.state.reconciles += 1;
     g.state.routes_removed += res.removed;
 
@@ -685,8 +695,10 @@ fn reload(g: *Guard) void {
     g.backoff_ms = 1000;
     g.loadFirewall();
     g.stopSingbox();
-    g.uplink = null;
     g.reconcile() catch |err| log.err("对账失败 {s}", .{@errorName(err)});
+    if (g.child_pid == null and g.uplink != null and g.paused_until_ms == null) {
+        g.startSingbox();
+    }
 }
 
 fn writeState(g: *Guard) void {
@@ -699,8 +711,11 @@ fn writeState(g: *Guard) void {
     g.state.health_total_failures = g.health.total_failures;
     g.state.health_ok_age_s = if (g.health.last_ok_ms != 0) @divTrunc(now - g.health.last_ok_ms, 1000) else -1;
     if (g.uplink) |*u| {
-        g.state.uplink = u.name();
+        g.state.uplink = std.fmt.bufPrint(&g.up_buf, "{s}", .{u.name()}) catch "";
         g.state.gateway = std.fmt.bufPrint(&g.gw_buf, "{f}", .{u.gateway}) catch "";
+    } else {
+        g.state.uplink = "";
+        g.state.gateway = "";
     }
     const data = std.json.Stringify.valueAlloc(g.gpa, g.state, .{}) catch return;
     defer g.gpa.free(data);
