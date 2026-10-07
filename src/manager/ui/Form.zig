@@ -183,11 +183,17 @@ pub fn key(f: *Form, k: Key) Outcome {
     return .none;
 }
 
-fn rowHeight(f: *const Form, row: Row, focused: bool) usize {
-    return switch (row) {
-        .field => |i| if (focused and f.fields[i].hint.len != 0) 2 else 1,
-        .advanced => 1,
-        .submit => 2,
+/// 底部说明栏 有错误时显示错误
+pub fn note(f: *const Form) struct { text: []const u8, bad: bool } {
+    if (f.error_text.len != 0) {
+        return .{ .text = f.error_text, .bad = true };
+    }
+    var buf: [64]Row = undefined;
+    const list = f.rows(&buf);
+    return switch (list[@min(f.focus, list.len - 1)]) {
+        .field => |i| .{ .text = f.fields[i].hint, .bad = false },
+        .advanced => .{ .text = "回车展开或收起", .bad = false },
+        .submit => .{ .text = "", .bad = false },
     };
 }
 
@@ -195,6 +201,7 @@ fn rowHeight(f: *const Form, row: Row, focused: bool) usize {
 pub fn draw(f: *const Form, s: *Screen, y0: usize, bottom: usize) void {
     var buf: [64]Row = undefined;
     const list = f.rows(&buf);
+    const focus = @min(f.focus, list.len - 1);
     var label_w: usize = 0;
     for (list) |row| {
         if (row == .field) {
@@ -202,24 +209,17 @@ pub fn draw(f: *const Form, s: *Screen, y0: usize, bottom: usize) void {
         }
     }
     const vx = 6 + label_w;
-    const room = bottom -| y0 -| @as(usize, if (f.error_text.len != 0) 2 else 0);
-    var focus_end: usize = 0;
-    for (list[0 .. f.focus + 1], 0..) |row, i| {
-        focus_end += f.rowHeight(row, i == f.focus);
-    }
+    const room = bottom -| y0;
+    // 确定按钮前空一行
+    const focus_end = focus + 1 + @intFromBool(list[focus] == .submit);
     const skip = focus_end -| room;
-    var y: usize = 0;
     for (list, 0..) |row, i| {
-        const focused = i == f.focus;
-        const top = y;
-        y += f.rowHeight(row, focused);
-        if (top < skip or y - skip > room) {
+        const top = i + @intFromBool(row == .submit);
+        if (top < skip or top - skip >= room) {
             continue;
         }
-        var line = y0 + top - skip;
-        if (row == .submit) {
-            line += 1;
-        }
+        const line = y0 + top - skip;
+        const focused = i == focus;
         if (focused) {
             _ = s.put(2, line, Screen.glyph.pointer, .focus);
         }
@@ -228,18 +228,12 @@ pub fn draw(f: *const Form, s: *Screen, y0: usize, bottom: usize) void {
                 const field = &f.fields[fi];
                 _ = s.put(4, line, field.label, if (focused) Screen.Style.focus else .normal);
                 field.drawValue(s, vx, line, focused);
-                if (focused and field.hint.len != 0) {
-                    _ = s.put(vx, line + 1, field.hint, .muted);
-                }
             },
             .advanced => {
                 _ = s.print(4, line, if (focused) Screen.Style.focus else .muted, "{s} 高级选项 {d} 项", .{ if (f.show_advanced) "▾" else "▸", f.advancedCount() });
             },
             .submit => _ = s.put(4, line, f.submit_label, if (focused) Screen.Style.title else .strong),
         }
-    }
-    if (f.error_text.len != 0) {
-        _ = s.mark(2, y0 + @min(y -| skip, room) + 1, .bad, f.error_text);
     }
 }
 

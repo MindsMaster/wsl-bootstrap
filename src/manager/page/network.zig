@@ -14,7 +14,7 @@ const dot = Screen.glyph.dot;
 
 pub fn draw(app: *App, s: *Screen) usize {
     const info = app.info;
-    var y: usize = 2;
+    var y: usize = 3;
     const installed = Wsl.find(info.distros, Wsl.net_distro) orelse {
         _ = s.mark(2, y, .warn, "网络发行版 wslb-net 未安装");
         _ = s.put(4, y + 1, "它负责整个 WSL 的出口 所有发行版共用一套网络", .muted);

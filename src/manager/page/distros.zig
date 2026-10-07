@@ -33,11 +33,11 @@ pub fn userList(app: *App, buf: []Wsl.Distro) []Wsl.Distro {
 pub fn draw(app: *App, s: *Screen) usize {
     var buf: [64]Wsl.Distro = undefined;
     if (userList(app, &buf).len == 0) {
-        _ = s.put(2, 2, "还没有用户发行版", .muted);
-        return 3;
+        _ = s.put(2, 3, "还没有用户发行版", .muted);
+        return 4;
     }
-    _ = s.put(2, 2, "网络发行版与 Docker 的不在这里管理", .muted);
-    return 3;
+    _ = s.put(2, 3, "网络发行版与 Docker 的不在这里管理", .muted);
+    return 4;
 }
 
 pub fn items(app: *App, a: std.mem.Allocator) ![]const Menu.Item {

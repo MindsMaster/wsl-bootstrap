@@ -36,10 +36,10 @@ const dot = Screen.glyph.dot;
 
 pub fn draw(app: *App, s: *Screen, name: []const u8) usize {
     const d = Wsl.find(app.info.distros, name) orelse {
-        _ = s.mark(2, 2, .bad, "找不到这个发行版");
-        return 3;
+        _ = s.mark(2, 3, .bad, "找不到这个发行版");
+        return 4;
     };
-    var y: usize = 2;
+    var y: usize = 3;
     const x = s.put(2, y, name, .strong);
     _ = s.print(x + 2, y, .muted, "{s}{s}", .{ if (d.state == .running) "运行中" else "已停止", if (d.default) dot ++ "默认" else "" });
     y += 1;

@@ -7,7 +7,7 @@ pub const Item = struct {
     label: []const u8,
     /// 标签右侧的灰色附注 多项之间按最长标签对齐
     note: []const u8 = "",
-    /// 聚焦时显示在下一行
+    /// 聚焦时显示在底部说明栏
     desc: []const u8 = "",
     danger: bool = false,
     run: *const fn (*App, []const u8) void,
@@ -50,12 +50,15 @@ pub fn draw(s: *Screen, x: usize, y0: usize, items: []const Item, cursor: usize)
             _ = s.put(x + 4 + label_w, y, it.note, .muted);
         }
         y += 1;
-        if (focused and it.desc.len != 0) {
-            _ = s.put(x + 2, y, it.desc, .muted);
-            y += 1;
-        }
     }
     return y;
+}
+
+pub fn desc(items: []const Item, cursor: usize) []const u8 {
+    if (cursor >= items.len) {
+        return "";
+    }
+    return items[cursor].desc;
 }
 
 fn noop(_: *App, _: []const u8) void {}

@@ -410,6 +410,7 @@ pub fn key(app: *App, k: Key) void {
     if (!app.info.loaded) {
         return;
     }
+    app.message_len = 0;
     const items = app.pageItems();
     if (Menu.key(items, app.cursor(), k)) |item| {
         item.run(app, item.arg);
@@ -493,33 +494,46 @@ fn pageItems(app: *App) []const Menu.Item {
     } catch &.{};
 }
 
+/// 第 0 行标签 第 1 行分隔线 底部三行是分隔线 说明栏 按键提示
 pub fn draw(app: *App) void {
     const s = &app.screen;
     s.clear();
     app.frame +%= 1;
     _ = app.frame_arena.reset(.retain_capacity);
     app.drawHeader();
-    const bottom = @as(usize, s.height) -| 1;
+    const h = @as(usize, s.height);
+    const bottom = h -| 3;
     var hints: []const u8 = "";
+    var info_line: []const u8 = "";
+    var line_style: Screen.Style = .muted;
     switch (app.modal) {
-        .none => hints = app.drawPage(),
+        .none => {
+            s.rule(1, .subtle);
+            hints = app.drawPage(&info_line);
+        },
         .form => |*m| {
-            const y = pane(s, 2, .title, m.form.title, "");
+            const y = pane(s, 1, .title, m.form.title, "");
             m.form.draw(s, y, bottom -| 1);
+            const n = m.form.note();
+            info_line = n.text;
+            line_style = if (n.bad) .bad else .muted;
             hints = "↑↓ 移动" ++ Screen.glyph.dot ++ "←→ 切换选项" ++ Screen.glyph.dot ++ "回车 下一项" ++ Screen.glyph.dot ++ "Esc 取消";
         },
         .confirm => |m| hints = drawConfirm(s, m),
         .note => |m| {
-            const y = pane(s, 2, .title, m.title, "");
+            const y = pane(s, 1, .title, m.title, "");
             _ = putLines(s, y, m.text, .normal);
             hints = "回车 关闭";
         },
         .log => hints = app.drawLog(),
     }
     if (app.message_len != 0 and app.modal == .none) {
-        _ = s.put(2, bottom -| 1, app.message[0..app.message_len], .warn);
+        info_line = app.message[0..app.message_len];
+        line_style = .warn;
     }
-    _ = s.put(2, bottom, hints, .muted);
+    s.rule(bottom, .subtle);
+    _ = s.put(2, h -| 2, info_line, line_style);
+    _ = s.put(2, h -| 1, hints, .muted);
 }
 
 fn drawHeader(app: *App) void {
@@ -547,11 +561,11 @@ fn drawHeader(app: *App) void {
 }
 
 /// 返回底部提示
-fn drawPage(app: *App) []const u8 {
+fn drawPage(app: *App, desc: *[]const u8) []const u8 {
     const s = &app.screen;
     if (!app.info.loaded) {
-        _ = s.put(2, 2, Screen.glyph.spinner[app.frame % Screen.glyph.spinner.len], .title);
-        _ = s.put(4, 2, "正在读取 WSL 状态", .muted);
+        _ = s.put(2, 3, Screen.glyph.spinner[app.frame % Screen.glyph.spinner.len], .title);
+        _ = s.put(4, 3, "正在读取 WSL 状态", .muted);
         return "q 退出";
     }
     const y = switch (app.page()) {
@@ -565,7 +579,11 @@ fn drawPage(app: *App) []const u8 {
     if (items.len != 0 and cur.* >= items.len) {
         cur.* = items.len - 1;
     }
-    _ = Menu.draw(s, 2, y + 1, items, cur.*);
+    if (items.len != 0) {
+        s.rule(y + 1, .subtle);
+        _ = Menu.draw(s, 2, y + 3, items, cur.*);
+        desc.* = Menu.desc(items, cur.*);
+    }
     const d = Screen.glyph.dot;
     const base = "↑↓ 选择" ++ d ++ "回车 执行" ++ d ++ "Tab 切页" ++ d ++ "r 刷新";
     const has_log = app.job != null or app.last != null;
@@ -598,7 +616,7 @@ fn putLines(s: *Screen, y0: usize, text: []const u8, style: Screen.Style) usize 
 
 fn drawConfirm(s: *Screen, m: anytype) []const u8 {
     const o = m.opts;
-    var y = pane(s, 2, if (o.danger) .bad else .title, o.title, "");
+    var y = pane(s, 1, if (o.danger) .bad else .title, o.title, "");
     y = putLines(s, y, o.text, .normal) + 1;
     if (o.typed.len != 0) {
         const x = s.print(2, y, .normal, "输入 {s} 确认 ", .{o.typed});
@@ -616,14 +634,14 @@ fn drawLog(app: *App) []const u8 {
     const job = app.job orelse app.last orelse return "";
     const done = job.log.done.load(.acquire);
     const style: Screen.Style = if (!done) .title else if (job.log.failed) .bad else .good;
-    const y0 = pane(s, 2, style, job.title, "");
+    const y0 = pane(s, 1, style, job.title, "");
     if (!done) {
         _ = s.put(2, y0 - 1, Screen.glyph.spinner[app.frame % Screen.glyph.spinner.len], .title);
         _ = s.put(4, y0 - 1, "运行中", .muted);
     } else {
         _ = s.mark(2, y0 - 1, if (job.log.failed) .bad else .ok, if (job.log.failed) "失败" else "完成");
     }
-    const rows = @as(usize, s.height) -| (y0 + 2);
+    const rows = @as(usize, s.height) -| (y0 + 4);
     const Ctx = struct { s: *Screen, top: usize, rows: usize };
     var ctx: Ctx = .{ .s = s, .top = y0, .rows = rows };
     job.log.tail(rows + app.log_scroll, &ctx, struct {

@@ -22,7 +22,7 @@ const dot = Screen.glyph.dot;
 
 pub fn draw(app: *App, s: *Screen) usize {
     const info = app.info;
-    var y: usize = 2;
+    var y: usize = 3;
     if (info.version) |v| {
         const x = s.print(2, y, .strong, "WSL {s}", .{v.wsl});
         _ = s.print(x + 2, y, .muted, "内核 {s}", .{v.kernel});
