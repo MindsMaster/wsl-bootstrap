@@ -26,6 +26,7 @@ pub fn run(env: Env, log: *Log, p: Params) !void {
     try env.requireProtected(log);
 
     log.print("==> 安装 {s} 为 {s}", .{ p.distro, p.name });
+    try env.ensureParent(log, p.location);
     try env.wsl.install(log, p.distro, p.name, p.location);
 
     log.add("==> 写入 wslb-agent");

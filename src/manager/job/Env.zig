@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Log = @import("../Log.zig");
 const Wsl = @import("../Wsl.zig");
 
@@ -60,6 +61,18 @@ pub fn requireProtected(env: Env, log: *Log) !void {
         return error.Unprotected;
     }
     log.add("网络受 wslb 守护进程保护");
+}
+
+/// wsl --import 与 --install --location 都不会建缺失的上级目录
+pub fn ensureParent(env: Env, log: *Log, dir: []const u8) !void {
+    if (builtin.os.tag != .windows) {
+        return;
+    }
+    const parent = std.fs.path.dirnameWindows(dir) orelse return;
+    std.Io.Dir.cwd().createDirPath(env.io, parent) catch |err| {
+        log.print("无法创建目录 {s} {s}", .{ parent, @errorName(err) });
+        return err;
+    };
 }
 
 pub fn wslExeInDistro(env: Env) ![]const u8 {

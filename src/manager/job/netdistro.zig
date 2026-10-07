@@ -19,6 +19,7 @@ pub fn install(env: Env, log: *Log, location: []const u8) !void {
     try std.Io.Dir.cwd().writeFile(env.io, .{ .sub_path = tar, .data = env.netdistro });
     defer std.Io.Dir.cwd().deleteFile(env.io, tar) catch {};
     log.print("==> 导入 {s} 到 {s}", .{ Wsl.net_distro, location });
+    try env.ensureParent(log, location);
     if (try env.wsl.importFrom(log, Wsl.net_distro, location, tar) != 0) {
         return error.ImportFailed;
     }
