@@ -40,9 +40,6 @@ pub fn start(env: Env, log: *Log) !void {
 
 /// 只换 agent 二进制 节点和规则保留
 pub fn upgradeAgent(env: Env, log: *Log) !void {
-    log.add("==> 更新网络发行版里的 wslb-agent");
-    try env.wsl.push(log, Wsl.net_distro, Wsl.agent_path, env.agent, "0755");
-    if (try env.wsl.exec(log, Wsl.net_distro, &.{ Wsl.agent_path, "restart" }, null) != 0) {
-        return error.RestartFailed;
-    }
+    try env.ensureAgent(log);
+    log.add("==> agent 已是最新");
 }

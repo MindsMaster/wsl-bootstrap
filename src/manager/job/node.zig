@@ -14,6 +14,7 @@ const Preview = struct {
 
 /// 节点域名在 Windows 侧解析 首次安装时隧道还没建立 防火墙会挡住发行版里的 DNS
 pub fn add(env: Env, log: *Log, link: []const u8, activate: bool) !void {
+    try env.ensureAgent(log);
     const input = try std.fmt.allocPrint(env.arena, "{s}\n", .{link});
     const r = try env.wsl.capture(env.arena, Wsl.net_distro, &.{ Wsl.agent_path, "set-node", "--dry-run", "--json" }, input);
     if (!r.ok()) {
@@ -36,6 +37,7 @@ pub fn add(env: Env, log: *Log, link: []const u8, activate: bool) !void {
 
 /// 切换时重新解析一次 节点 IP 可能变过 解析失败就沿用保存的 IP
 pub fn use(env: Env, log: *Log, id: []const u8, host: []const u8) !void {
+    try env.ensureAgent(log);
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(env.arena, &.{ Wsl.agent_path, "node", "use", id });
     if (pin(env, host)) |ip| {
@@ -63,6 +65,7 @@ const Parsed = struct {
 
 /// 剪贴板里可能是一批链接 base64 或订阅地址 订阅交给网络发行版经隧道下载
 pub fn importText(env: Env, log: *Log, text: []const u8) !void {
+    try env.ensureAgent(log);
     const trimmed = std.mem.trim(u8, text, " \t\r\n");
     if (std.mem.startsWith(u8, trimmed, "http://") or std.mem.startsWith(u8, trimmed, "https://")) {
         if (std.mem.indexOfAny(u8, trimmed, " \t\r\n") == null) {
@@ -75,6 +78,7 @@ pub fn importText(env: Env, log: *Log, text: []const u8) !void {
 }
 
 pub fn importUrl(env: Env, log: *Log, url: []const u8) !void {
+    try env.ensureAgent(log);
     log.add("==> 经隧道下载订阅 不走 Windows 的真实网络");
     const r = try env.wsl.capture(env.arena, Wsl.net_distro, &.{ Wsl.agent_path, "node", "parse", "--url", url }, null);
     try importParsed(env, log, r);
@@ -113,6 +117,7 @@ fn importParsed(env: Env, log: *Log, r: anytype) !void {
 }
 
 pub fn remove(env: Env, log: *Log, id: []const u8) !void {
+    try env.ensureAgent(log);
     if (try env.wsl.exec(log, Wsl.net_distro, &.{ Wsl.agent_path, "node", "remove", id }, null) != 0) {
         return error.RemoveNodeFailed;
     }

@@ -1,4 +1,5 @@
 const std = @import("std");
+const build_options = @import("build_options");
 const builtin = @import("builtin");
 const Log = @import("../Log.zig");
 const Wsl = @import("../Wsl.zig");
@@ -78,6 +79,20 @@ pub fn requireProtected(env: Env, log: *Log) !void {
         return error.Unprotected;
     }
     log.add("网络受 wslb 守护进程保护");
+}
+
+/// 网络发行版里的 agent 与 wslb.exe 版本不同就先换掉 旧版缺少新命令
+pub fn ensureAgent(env: Env, log: *Log) !void {
+    const r = try env.wsl.capture(env.arena, Wsl.net_distro, &.{ Wsl.agent_path, "version" }, null);
+    const have = std.mem.trim(u8, std.mem.trimStart(u8, r.stdout, "wslb-agent"), " \r\n");
+    if (r.ok() and std.mem.eql(u8, have, build_options.version)) {
+        return;
+    }
+    log.print("==> 网络发行版的 agent 是 {s} 先更新到 {s} 防火墙与黑洞保留", .{ if (have.len != 0) have else "旧版", build_options.version });
+    try env.wsl.push(log, Wsl.net_distro, Wsl.agent_path, env.agent, "0755");
+    if (try env.wsl.exec(log, Wsl.net_distro, &.{ Wsl.agent_path, "restart" }, null) != 0) {
+        return error.RestartFailed;
+    }
 }
 
 /// wsl --import 与 --install --location 都不会建缺失的上级目录
