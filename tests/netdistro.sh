@@ -74,6 +74,15 @@ check "校验不过的节点不会被启用" bash -c "! chroot '$ROOT' /usr/loca
 check "启用失败后仍是 hysteria2 节点" bash -c "chroot '$ROOT' /usr/local/bin/wslb-agent node list | grep -q '^\* .* HY '"
 in_root /usr/local/bin/wslb-agent set-node "$link" --ip 203.0.113.7 >/dev/null
 
+echo "订阅分组"
+sub_id=$(in_root /usr/local/bin/wslb-agent sub add --url 'https://sub.example.com/s?token=x' --name 机场A)
+printf '203.0.113.21\thy2://pw@a.example.com:443#A1\n203.0.113.22\tvless://22222222-0000-4000-8000-000000000000@b.example.com:443#A2\n' | in_root /usr/local/bin/wslb-agent sub sync "$sub_id" >/dev/null
+check "同步后订阅里有 2 个节点" bash -c "chroot '$ROOT' /usr/local/bin/wslb-agent sub list | grep -q '\"count\": 2'"
+printf '203.0.113.22\tvless://22222222-0000-4000-8000-000000000000@b.example.com:443#A2\n' | in_root /usr/local/bin/wslb-agent sub sync "$sub_id" >/dev/null
+check "再次同步时订阅删掉的节点也删除" bash -c "chroot '$ROOT' /usr/local/bin/wslb-agent sub list | grep -q '\"count\": 1'"
+check "删除订阅" in_root /usr/local/bin/wslb-agent sub remove "$sub_id"
+check "订阅文件只有 root 可读" bash -c "[[ \$(stat -c %a '$ROOT/etc/wslb/subs.json') == 600 ]]"
+
 echo "开机命令拉起守护进程 真实 sing-box"
 in_root /usr/local/bin/wslb-agent start
 state() { in_root /usr/local/bin/wslb-agent status --json 2>/dev/null || true; }

@@ -64,27 +64,68 @@ const Parsed = struct {
 };
 
 /// 剪贴板里可能是一批链接 base64 或订阅地址 订阅交给网络发行版经隧道下载
+/// 剪贴板里可能是一批链接 base64 或订阅地址 订阅交给网络发行版经隧道下载
 pub fn importText(env: Env, log: *Log, text: []const u8) !void {
     try env.ensureAgent(log);
     const trimmed = std.mem.trim(u8, text, " \t\r\n");
     if (std.mem.startsWith(u8, trimmed, "http://") or std.mem.startsWith(u8, trimmed, "https://")) {
         if (std.mem.indexOfAny(u8, trimmed, " \t\r\n") == null) {
-            return importUrl(env, log, trimmed);
+            return addSub(env, log, trimmed, "");
         }
     }
-    log.add("==> 解析剪贴板内容");
+    log.add("==> 解析剪贴板内容 导入到手动分组");
     const r = try env.wsl.capture(env.arena, Wsl.net_distro, &.{ Wsl.agent_path, "node", "parse" }, text);
-    try importParsed(env, log, r);
+    const lines = try resolveParsed(env, log, r);
+    if (try env.wsl.exec(log, Wsl.net_distro, &.{ Wsl.agent_path, "node", "import", "--use-first" }, lines) != 0) {
+        return error.ImportFailed;
+    }
 }
 
-pub fn importUrl(env: Env, log: *Log, url: []const u8) !void {
+pub fn addSub(env: Env, log: *Log, url: []const u8, name: []const u8) !void {
+    try env.ensureAgent(log);
+    var argv: std.ArrayList([]const u8) = .empty;
+    try argv.appendSlice(env.arena, &.{ Wsl.agent_path, "sub", "add", "--url", url });
+    if (name.len != 0) {
+        try argv.appendSlice(env.arena, &.{ "--name", name });
+    }
+    const r = try env.wsl.capture(env.arena, Wsl.net_distro, argv.items, null);
+    if (!r.ok()) {
+        log.add(std.mem.trim(u8, r.stderr, " \r\n"));
+        return error.AddSubFailed;
+    }
+    return syncSub(env, log, std.mem.trim(u8, r.stdout, " \r\n"));
+}
+
+/// 订阅经隧道下载 节点域名在 Windows 侧解析 整组替换
+pub fn syncSub(env: Env, log: *Log, id: []const u8) !void {
     try env.ensureAgent(log);
     log.add("==> 经隧道下载订阅 不走 Windows 的真实网络");
-    const r = try env.wsl.capture(env.arena, Wsl.net_distro, &.{ Wsl.agent_path, "node", "parse", "--url", url }, null);
-    try importParsed(env, log, r);
+    const r = try env.wsl.capture(env.arena, Wsl.net_distro, &.{ Wsl.agent_path, "node", "parse", "--sub", id }, null);
+    const lines = try resolveParsed(env, log, r);
+    if (try env.wsl.exec(log, Wsl.net_distro, &.{ Wsl.agent_path, "sub", "sync", id }, lines) != 0) {
+        return error.SyncFailed;
+    }
+    if (try env.wsl.exec(log, Wsl.net_distro, &.{ Wsl.agent_path, "node", "list" }, null) != 0) {
+        return error.ListFailed;
+    }
 }
 
-fn importParsed(env: Env, log: *Log, r: anytype) !void {
+pub fn renameSub(env: Env, log: *Log, id: []const u8, name: []const u8) !void {
+    try env.ensureAgent(log);
+    if (try env.wsl.exec(log, Wsl.net_distro, &.{ Wsl.agent_path, "sub", "rename", id, name }, null) != 0) {
+        return error.RenameFailed;
+    }
+}
+
+pub fn removeSub(env: Env, log: *Log, id: []const u8) !void {
+    try env.ensureAgent(log);
+    if (try env.wsl.exec(log, Wsl.net_distro, &.{ Wsl.agent_path, "sub", "remove", id }, null) != 0) {
+        return error.RemoveSubFailed;
+    }
+}
+
+/// 返回给 agent 的 `IP<TAB>链接` 行
+fn resolveParsed(env: Env, log: *Log, r: anytype) ![]const u8 {
     if (!r.ok()) {
         log.add(std.mem.trim(u8, r.stderr, " \r\n"));
         return error.ParseFailed;
@@ -110,10 +151,7 @@ fn importParsed(env: Env, log: *Log, r: anytype) !void {
         }
         try lines.writer.print("{s}\t{s}\n", .{ ip, n.link });
     }
-    log.add("==> 保存节点 还没有在用的节点时启用第一个");
-    if (try env.wsl.exec(log, Wsl.net_distro, &.{ Wsl.agent_path, "node", "import", "--use-first" }, lines.written()) != 0) {
-        return error.ImportFailed;
-    }
+    return lines.written();
 }
 
 pub fn remove(env: Env, log: *Log, id: []const u8) !void {

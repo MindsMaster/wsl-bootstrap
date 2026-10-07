@@ -11,6 +11,8 @@ pub const Item = struct {
     /// 聚焦时显示在底部说明栏
     desc: []const u8 = "",
     danger: bool = false,
+    /// 与上一项之间空一行 用来分开列表和操作
+    gap: bool = false,
     run: *const fn (*App, []const u8) void,
     arg: []const u8 = "",
 };
@@ -46,6 +48,9 @@ pub fn draw(s: *Screen, x: usize, y0: usize, items: []const Item, cursor: usize)
     }
     var y = y0;
     for (items, 0..) |it, i| {
+        if (it.gap and i != 0) {
+            y += 1;
+        }
         const focused = i == cursor;
         const style: Screen.Style = if (it.danger) .bad else if (focused) .focus else .normal;
         if (focused) {

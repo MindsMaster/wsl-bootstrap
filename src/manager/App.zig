@@ -51,6 +51,7 @@ pub const Info = struct {
     distros: []Wsl.Distro = &.{},
     net: ?Env.NetStatus = null,
     nodes: []Env.NodeEntry = &.{},
+    subs: []Env.SubEntry = &.{},
     net_error: []const u8 = "",
     autostart: bool = false,
     wslconfig_path: []const u8 = "",
@@ -114,6 +115,8 @@ detail_buf: [64]u8 = undefined,
 cursors: [5]usize = .{ 0, 0, 0, 0, 0 },
 /// 网络页下的节点列表
 nodes_open: bool = false,
+/// 0 是手动导入 其余是 info.subs 的下标加一
+node_group: usize = 0,
 modal: Modal = .none,
 /// 弹窗里用到的字符串 关闭弹窗时一起释放
 modal_arena: std.heap.ArenaAllocator,
@@ -341,6 +344,7 @@ fn loadInfo(env: Env, log: *Log, info: *Info, win_env: *const std.process.Enviro
             break :blk null;
         };
         info.nodes = sub.nodeList() catch &.{};
+        info.subs = sub.subList() catch &.{};
     }
     info.autostart = winsys.autostartEnabled(env.wsl.runner, a);
     info.wslconfig_path = wslconfig.path(a, win_env) catch "";
@@ -422,6 +426,9 @@ pub fn key(app: *App, k: Key) void {
             }
             return;
         },
+    }
+    if (app.page() == .nodes and (k == .left or k == .right)) {
+        return page_nodes.switchGroup(app, if (k == .left) -1 else 1);
     }
     switch (k) {
         .tab, .right => return app.switchTab(1),
@@ -512,6 +519,7 @@ pub fn openDetail(app: *App, name: []const u8) void {
 
 pub fn openNodes(app: *App) void {
     app.nodes_open = true;
+    app.node_group = page_nodes.activeGroup(app);
     app.cursors[@backingInt(std.meta.Tag(Page).nodes)] = 0;
 }
 
@@ -647,7 +655,10 @@ fn drawPage(app: *App, desc: *[]const u8) []const u8 {
     const d = Screen.glyph.dot;
     const base = "↑↓ 选择" ++ d ++ "回车 执行" ++ d ++ "Tab 切页" ++ d ++ "r 刷新";
     const has_log = app.job != null or app.last != null;
-    if (app.detail != null or app.nodes_open) {
+    if (app.nodes_open) {
+        return "↑↓ 选择" ++ d ++ "←→ 切换分组" ++ d ++ "回车 执行" ++ d ++ "r 刷新" ++ d ++ "Esc 返回";
+    }
+    if (app.detail != null) {
         return if (has_log) base ++ d ++ "l 任务日志" ++ d ++ "Esc 返回" else base ++ d ++ "Esc 返回";
     }
     return if (has_log) base ++ d ++ "l 任务日志" ++ d ++ "q 退出" else base ++ d ++ "q 退出";

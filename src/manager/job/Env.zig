@@ -56,8 +56,22 @@ pub const NodeEntry = struct {
     port: u16 = 0,
     security: []const u8 = "",
     transport: []const u8 = "",
+    protocol: []const u8 = "",
+    group: []const u8 = "",
     active: bool = false,
 };
+
+pub const SubEntry = struct {
+    id: []const u8 = "",
+    name: []const u8 = "",
+    updated: i64 = 0,
+    count: u32 = 0,
+};
+
+pub fn subList(env: Env) ![]SubEntry {
+    const r = try env.wsl.capture(env.arena, Wsl.net_distro, &.{ Wsl.agent_path, "sub", "list" }, null);
+    return std.json.parseFromSliceLeaky([]SubEntry, env.arena, r.stdout, .{ .ignore_unknown_fields = true });
+}
 
 pub fn nodeList(env: Env) ![]NodeEntry {
     const r = try env.wsl.capture(env.arena, Wsl.net_distro, &.{ Wsl.agent_path, "node", "list", "--json" }, null);
