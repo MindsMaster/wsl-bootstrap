@@ -145,6 +145,17 @@ fn advancedCount(f: *const Form) usize {
     return n;
 }
 
+/// 折叠后行数变少 焦点要跟着高级选项那一行
+fn toggleAdvanced(f: *Form) void {
+    f.show_advanced = !f.show_advanced;
+    var buf: [64]Row = undefined;
+    for (f.rows(&buf), 0..) |row, i| {
+        if (row == .advanced) {
+            f.focus = i;
+        }
+    }
+}
+
 /// 回车在字段上跳到下一项 在确定上提交
 pub fn key(f: *Form, k: Key) Outcome {
     var buf: [64]Row = undefined;
@@ -158,13 +169,13 @@ pub fn key(f: *Form, k: Key) Outcome {
         .down, .tab => f.focus = (f.focus + 1) % list.len,
         .enter => switch (row) {
             .submit => return .submit,
-            .advanced => f.show_advanced = !f.show_advanced,
+            .advanced => f.toggleAdvanced(),
             .field => f.focus += 1,
         },
         else => switch (row) {
             .field => |i| f.fields[i].edit(k),
             .advanced => if (k == .left or k == .right or k.isChar(' ')) {
-                f.show_advanced = !f.show_advanced;
+                f.toggleAdvanced();
             },
             .submit => {},
         },
@@ -246,9 +257,13 @@ test "advanced fields stay folded until opened and submit is its own row" {
     try std.testing.expectEqual(Outcome.none, f.key(.enter));
     try std.testing.expectEqual(Outcome.none, f.key(.enter));
     try std.testing.expect(f.show_advanced);
+    _ = f.key(.up);
     _ = f.key(.{ .char = ' ' });
     try std.testing.expect(f.get("b").on);
     _ = f.key(.down);
+    try std.testing.expectEqual(Outcome.none, f.key(.enter));
+    try std.testing.expect(!f.show_advanced);
+    try std.testing.expectEqual(@as(usize, 1), f.focus);
     _ = f.key(.down);
     try std.testing.expectEqual(Outcome.submit, f.key(.enter));
 }
