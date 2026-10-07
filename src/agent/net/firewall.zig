@@ -95,11 +95,11 @@ pub fn remove(gpa: Allocator, nft: *Nft) !void {
 test "guard ruleset" {
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
-    try render(&out.writer, .guard, .{ .node_ip = "45.42.142.185", .lan_cidr = "192.168.8.0/24", .local_cidrs = &.{"10.0.0.0/8"} });
+    try render(&out.writer, .guard, .{ .node_ip = "203.0.113.7", .lan_cidr = "192.168.8.0/24", .local_cidrs = &.{"10.0.0.0/8"} });
     const text = out.written();
     try std.testing.expect(std.mem.startsWith(u8, text, "add table inet wslb\ndelete table inet wslb\n"));
     try std.testing.expect(std.mem.indexOf(u8, text, "comment \"wslb guard\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "45.42.142.185/32, 192.168.8.0/24, 10.0.0.0/8") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "203.0.113.7/32, 192.168.8.0/24, 10.0.0.0/8") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "oifname \"wslb0\" accept") != null);
 }
 
