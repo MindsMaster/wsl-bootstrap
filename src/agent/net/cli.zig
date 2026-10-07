@@ -432,20 +432,32 @@ fn fetchSubscription(c: *Cli, url: []const u8) ![]const u8 {
             return error.NoTunnel;
         }
     }
+    // agent 刚更新时 sing-box 在重启 隧道要几秒才通
+    var attempt: usize = 0;
+    while (true) : (attempt += 1) {
+        if (download(c, url)) |text| {
+            return text;
+        } else |err| {
+            if (attempt == 4) {
+                try c.err.print("下载订阅失败 {s}\n", .{@errorName(err)});
+                return err;
+            }
+            try c.io.sleep(.fromSeconds(3), .awake);
+        }
+    }
+}
+
+fn download(c: *Cli, url: []const u8) ![]const u8 {
     var client: std.http.Client = .{ .allocator = c.arena, .io = c.io };
     defer client.deinit();
     var body: std.Io.Writer.Allocating = .init(c.arena);
-    const res = client.fetch(.{
+    const res = try client.fetch(.{
         .location = .{ .url = url },
         .response_writer = &body.writer,
         .keep_alive = false,
         .headers = .{ .user_agent = .{ .override = subscription_agent } },
-    }) catch |err| {
-        try c.err.print("下载订阅失败 {s}\n", .{@errorName(err)});
-        return err;
-    };
+    });
     if (res.status != .ok) {
-        try c.err.print("订阅返回 HTTP {d}\n", .{@backingInt(res.status)});
         return error.BadStatus;
     }
     return body.written();
