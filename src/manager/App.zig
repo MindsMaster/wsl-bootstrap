@@ -52,6 +52,7 @@ pub const Info = struct {
     net: ?Env.NetStatus = null,
     nodes: []Env.NodeEntry = &.{},
     subs: []Env.SubEntry = &.{},
+    lans: []Env.LanEntry = &.{},
     net_error: []const u8 = "",
     autostart: bool = false,
     wslconfig_path: []const u8 = "",
@@ -135,6 +136,8 @@ temp_dir: []const u8,
 agent: []const u8,
 netdistro: []const u8,
 log_scroll: usize = 0,
+/// 运行中的任务在日志页按过一次 Esc 再按一次才取消
+cancel_armed: bool = false,
 
 pub fn init(gpa: Allocator, io: std.Io, env: *const std.process.Environ.Map, runner: Runner, agent: []const u8, netdistro: []const u8) !App {
     const info = try gpa.create(Info);
@@ -249,7 +252,7 @@ pub fn busy(app: *App) bool {
 pub fn newJob(app: *App, title: []const u8) ?*Job {
     if (app.job != null) {
         if (app.busy()) {
-            app.setMessage("已有任务在运行 稍等", .{});
+            app.setMessage("已有任务在运行 按 l 查看进度或取消", .{});
             return null;
         }
         app.reapJob();
@@ -278,6 +281,11 @@ pub fn runJob(app: *App, job: *Job, comptime func: anytype, args: anytype) void 
             if (@call(.auto, func, .{ env, log } ++ a)) |_| {
                 log.finish(false, "完成");
             } else |err| {
+                if (err == error.Cancelled) {
+                    log.add("已取消");
+                    log.finish(true, "已取消");
+                    return;
+                }
                 log.print("失败 {s}", .{@errorName(err)});
                 log.finish(true, @errorName(err));
             }
@@ -285,6 +293,8 @@ pub fn runJob(app: *App, job: *Job, comptime func: anytype, args: anytype) void 
     };
     app.job = job;
     app.log_scroll = 0;
+    app.cancel_armed = false;
+    app.wsl.runner.arm();
     job.thread = std.Thread.spawn(.{}, Wrap.main, .{ app.jobEnv(job), &job.log, args }) catch |err| {
         job.log.finish(true, @errorName(err));
         return;
@@ -345,6 +355,7 @@ fn loadInfo(env: Env, log: *Log, info: *Info, win_env: *const std.process.Enviro
         };
         info.nodes = sub.nodeList() catch &.{};
         info.subs = sub.subList() catch &.{};
+        info.lans = sub.lanList() catch &.{};
     }
     info.autostart = winsys.autostartEnabled(env.wsl.runner, a);
     info.wslconfig_path = wslconfig.path(a, win_env) catch "";
@@ -407,13 +418,18 @@ pub fn key(app: *App, k: Key) void {
         },
         .log => {
             switch (k) {
-                .escape, .enter => {
-                    app.closeModal();
-                    if (app.job != null and !app.busy()) {
-                        app.reapJob();
-                        app.refresh();
+                .escape => if (app.busy()) {
+                    if (app.cancel_armed) {
+                        app.cancel_armed = false;
+                        app.job.?.log.add("==> 正在取消");
+                        app.wsl.runner.cancel();
+                    } else {
+                        app.cancel_armed = true;
                     }
+                } else {
+                    app.closeLog();
                 },
+                .enter => app.closeLog(),
                 .up, .page_up => app.log_scroll += if (k == .up) 1 else 10,
                 .down, .page_down => app.log_scroll -|= if (k == .down) 1 else 10,
                 else => {},
@@ -462,6 +478,15 @@ pub fn key(app: *App, k: Key) void {
     const items = app.pageItems();
     if (Menu.key(items, app.cursor(), k)) |item| {
         item.run(app, item.arg);
+    }
+}
+
+fn closeLog(app: *App) void {
+    app.cancel_armed = false;
+    app.closeModal();
+    if (app.job != null and !app.busy()) {
+        app.reapJob();
+        app.refresh();
     }
 }
 
@@ -620,10 +645,12 @@ fn drawHeader(app: *App) void {
     }
     if (app.busy()) {
         const job = app.job.?;
-        const w = Screen.textWidth(job.title) + 4;
+        const hint = if (app.modal == .log) "" else "  l 查看";
+        const w = Screen.textWidth(job.title) + Screen.textWidth(hint) + 4;
         const sx = @as(usize, s.width) -| w;
         _ = s.put(sx, 0, Screen.glyph.spinner[app.frame % Screen.glyph.spinner.len], .title);
-        _ = s.put(sx + 2, 0, job.title, .muted);
+        const ex = s.put(sx + 2, 0, job.title, .muted);
+        _ = s.put(ex, 0, hint, .focus);
     }
 }
 
@@ -710,7 +737,8 @@ fn drawLog(app: *App) []const u8 {
         _ = s.put(2, y0 - 1, Screen.glyph.spinner[app.frame % Screen.glyph.spinner.len], .title);
         _ = s.put(4, y0 - 1, "运行中", .muted);
     } else {
-        _ = s.mark(2, y0 - 1, if (job.log.failed) .bad else .ok, if (job.log.failed) "失败" else "完成");
+        const cancelled = std.mem.eql(u8, job.log.summary, "已取消");
+        _ = s.mark(2, y0 - 1, if (cancelled) .warn else if (job.log.failed) .bad else .ok, if (cancelled) "已取消" else if (job.log.failed) "失败" else "完成");
     }
     const rows = @as(usize, s.height) -| (y0 + 4);
     const Ctx = struct { s: *Screen, top: usize, rows: usize };
@@ -732,7 +760,10 @@ fn drawLog(app: *App) []const u8 {
         }
     }.each);
     if (!done) {
-        return "↑↓ 滚动" ++ Screen.glyph.dot ++ "Esc 转到后台";
+        if (app.cancel_armed) {
+            return "再按一次 Esc 取消任务" ++ Screen.glyph.dot ++ "回车 转到后台";
+        }
+        return "↑↓ 滚动" ++ Screen.glyph.dot ++ "回车 转到后台" ++ Screen.glyph.dot ++ "Esc 取消任务";
     }
     return "↑↓ 滚动" ++ Screen.glyph.dot ++ "回车 关闭";
 }

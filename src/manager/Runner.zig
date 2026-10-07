@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Log = @import("Log.zig");
 
 const Runner = @This();
@@ -20,6 +21,9 @@ pub const VTable = struct {
     stream: *const fn (ptr: *anyopaque, argv: []const []const u8, input: ?[]const u8, log: *Log) anyerror!u32,
     /// 不等待 不弹窗口 管理器退出后继续运行
     detach: *const fn (ptr: *anyopaque, argv: []const []const u8) anyerror!void,
+    /// 结束正在运行的子进程 之后的 run stream 都返回 error.Cancelled 直到 arm
+    cancel: *const fn (ptr: *anyopaque) void,
+    arm: *const fn (ptr: *anyopaque) void,
 };
 
 ptr: *anyopaque,
@@ -37,11 +41,29 @@ pub fn detach(r: Runner, argv: []const []const u8) !void {
     return r.vtable.detach(r.ptr, argv);
 }
 
+pub fn cancel(r: Runner) void {
+    r.vtable.cancel(r.ptr);
+}
+
+pub fn arm(r: Runner) void {
+    r.vtable.arm(r.ptr);
+}
+
+/// 子进程自成一组 取消时连同它的子进程一起结束 免得管道一直被占着
+const own_group: ?std.posix.pid_t = if (builtin.os.tag == .windows) null else 0;
+
+const kernel32 = if (builtin.os.tag == .windows) struct {
+    extern "kernel32" fn TerminateProcess(h: std.os.windows.HANDLE, code: u32) callconv(.winapi) std.os.windows.BOOL;
+} else struct {};
+
 /// 真正启动进程 wsl.exe 默认输出 UTF-16 设 WSL_UTF8 后改为 UTF-8
 pub const Real = struct {
     gpa: Allocator,
     io: std.Io,
     env: std.process.Environ.Map,
+    cancelled: std.atomic.Value(bool) = .init(false),
+    /// 正在运行的子进程 Windows 上是进程句柄 其他系统是 pid 0 表示没有
+    current: std.atomic.Value(usize) = .init(0),
 
     pub fn init(gpa: Allocator, io: std.Io, base: *const std.process.Environ.Map) !Real {
         var env = try base.clone(gpa);
@@ -59,7 +81,45 @@ pub const Real = struct {
     }
 
     pub fn runner(r: *Real) Runner {
-        return .{ .ptr = r, .vtable = &.{ .run = run_, .stream = stream_, .detach = detach_ } };
+        return .{ .ptr = r, .vtable = &.{ .run = run_, .stream = stream_, .detach = detach_, .cancel = cancel_, .arm = arm_ } };
+    }
+
+    fn cancel_(ptr: *anyopaque) void {
+        const r: *Real = @ptrCast(@alignCast(ptr));
+        r.cancelled.store(true, .release);
+        r.kill(r.current.load(.acquire));
+    }
+
+    fn arm_(ptr: *anyopaque) void {
+        const r: *Real = @ptrCast(@alignCast(ptr));
+        r.cancelled.store(false, .release);
+    }
+
+    fn kill(_: *Real, id: usize) void {
+        if (id == 0) {
+            return;
+        }
+        if (builtin.os.tag == .windows) {
+            _ = kernel32.TerminateProcess(@ptrFromInt(id), 1);
+        } else {
+            std.posix.kill(-@as(std.posix.pid_t, @intCast(id)), .TERM) catch {};
+        }
+    }
+
+    /// 取消可能发生在启动前后 记下进程后再查一次
+    fn track(r: *Real, child: *const std.process.Child) void {
+        const id: usize = if (builtin.os.tag == .windows) @intFromPtr(child.id) else @intCast(child.id orelse 0);
+        r.current.store(id, .release);
+        if (r.cancelled.load(.acquire)) {
+            r.kill(id);
+        }
+    }
+
+    fn finish(r: *Real) !void {
+        r.current.store(0, .release);
+        if (r.cancelled.load(.acquire)) {
+            return error.Cancelled;
+        }
     }
 
     fn exitCode(term: std.process.Child.Term) u32 {
@@ -71,6 +131,9 @@ pub const Real = struct {
 
     fn run_(ptr: *anyopaque, arena: Allocator, argv: []const []const u8, input: ?[]const u8) !Result {
         const r: *Real = @ptrCast(@alignCast(ptr));
+        if (r.cancelled.load(.acquire)) {
+            return error.Cancelled;
+        }
         var child = try std.process.spawn(r.io, .{
             .argv = argv,
             .environ_map = &r.env,
@@ -78,7 +141,9 @@ pub const Real = struct {
             .stdout = .pipe,
             .stderr = .pipe,
             .create_no_window = true,
+            .pgid = own_group,
         });
+        r.track(&child);
         if (input) |data| {
             var w = child.stdin.?.writer(r.io, &.{});
             w.interface.writeAll(data) catch {};
@@ -90,11 +155,15 @@ pub const Real = struct {
         var err_r = child.stderr.?.reader(r.io, &.{});
         const err = try err_r.interface.allocRemaining(arena, .limited(1 << 20));
         const term = try child.wait(r.io);
+        try r.finish();
         return .{ .code = exitCode(term), .stdout = try decode(arena, out), .stderr = try decode(arena, err) };
     }
 
     fn stream_(ptr: *anyopaque, argv: []const []const u8, input: ?[]const u8, log: *Log) !u32 {
         const r: *Real = @ptrCast(@alignCast(ptr));
+        if (r.cancelled.load(.acquire)) {
+            return error.Cancelled;
+        }
         var child = try std.process.spawn(r.io, .{
             .argv = argv,
             .environ_map = &r.env,
@@ -102,7 +171,9 @@ pub const Real = struct {
             .stdout = .pipe,
             .stderr = .pipe,
             .create_no_window = true,
+            .pgid = own_group,
         });
+        r.track(&child);
         if (input) |data| {
             var w = child.stdin.?.writer(r.io, &.{});
             w.interface.writeAll(data) catch {};
@@ -134,7 +205,9 @@ pub const Real = struct {
         while (err_r.interface.takeDelimiterInclusive('\n')) |line| {
             log.add(line);
         } else |_| {}
-        return exitCode(try child.wait(r.io));
+        const term = try child.wait(r.io);
+        try r.finish();
+        return exitCode(term);
     }
 
     fn detach_(ptr: *anyopaque, argv: []const []const u8) !void {
@@ -183,7 +256,7 @@ pub const Recorder = struct {
     }
 
     pub fn runner(r: *Recorder) Runner {
-        return .{ .ptr = r, .vtable = &.{ .run = run_, .stream = stream_, .detach = detach_ } };
+        return .{ .ptr = r, .vtable = &.{ .run = run_, .stream = stream_, .detach = detach_, .cancel = nop, .arm = nop } };
     }
 
     fn record(r: *Recorder, argv: []const []const u8) ![]const u8 {
@@ -214,6 +287,8 @@ pub const Recorder = struct {
         }
         return res.code;
     }
+
+    fn nop(_: *anyopaque) void {}
 
     fn detach_(ptr: *anyopaque, argv: []const []const u8) !void {
         const r: *Recorder = @ptrCast(@alignCast(ptr));
