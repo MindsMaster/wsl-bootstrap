@@ -312,7 +312,7 @@ fn loadInfo(env: Env, log: *Log, info: *Info, win_env: *const std.process.Enviro
     }
     info.gpu = winsys.gpuNames(env.wsl.runner, a);
     if (detail) |name| {
-        info.detail = page_distro.load(sub, name);
+        info.detail = page_distro.load(sub, try a.dupe(u8, name));
     }
     info.loaded = true;
 }
