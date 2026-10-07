@@ -49,7 +49,7 @@ fn loadNode(c: *Cli) ?Node {
 fn guardState(c: *Cli) ?Guard.State {
     var buf: [2048]u8 = undefined;
     const data = Control.request("state", &buf) catch return null;
-    return std.json.parseFromSliceLeaky(Guard.State, c.arena, data, .{ .ignore_unknown_fields = true }) catch null;
+    return std.json.parseFromSliceLeaky(Guard.State, c.arena, data, .{ .ignore_unknown_fields = true, .allocate = .alloc_always }) catch null;
 }
 
 /// 守护进程在跑就让它重读配置
