@@ -66,6 +66,13 @@ in_root /usr/local/bin/wslb-agent config set lan-gateway 192.168.50.1 >/dev/null
 in_root /usr/local/bin/wslb-agent config set health-interval 0 >/dev/null
 in_root /usr/local/bin/wslb-agent singbox-config >"$ROOT/tmp/sb.json"
 check "生成的配置通过随包 sing-box 校验" in_root /usr/local/lib/wslb/sing-box check -c /tmp/sb.json
+check "hysteria2 节点通过随包 sing-box 校验" in_root /usr/local/bin/wslb-agent node add 'hy2://p%40ss@h.example.com:8443/?sni=s.example.com&obfs=salamander&obfs-password=ob#HY' --ip 203.0.113.8
+check "tuic 节点通过随包 sing-box 校验" in_root /usr/local/bin/wslb-agent node add 'tuic://11111111-1111-1111-1111-111111111111:pw@t.example.com:443?congestion_control=bbr&alpn=h3#TU' --ip 203.0.113.9
+hy_id=$(in_root /usr/local/bin/wslb-agent node list | awk '/ HY /{print $(NF-2)}')
+check "切到 hysteria2 节点" in_root /usr/local/bin/wslb-agent node use "$hy_id"
+check "校验不过的节点不会被启用" bash -c "! chroot '$ROOT' /usr/local/bin/wslb-agent node add 'vless://00000000-0000-4000-8000-000000000000@v.example.com:443?security=reality&pbk=bad#VR' --ip 203.0.113.10 --use"
+check "启用失败后仍是 hysteria2 节点" bash -c "chroot '$ROOT' /usr/local/bin/wslb-agent node list | grep -q '^\* .* HY '"
+in_root /usr/local/bin/wslb-agent set-node "$link" --ip 203.0.113.7 >/dev/null
 
 echo "开机命令拉起守护进程 真实 sing-box"
 in_root /usr/local/bin/wslb-agent start

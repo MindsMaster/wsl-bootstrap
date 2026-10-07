@@ -25,7 +25,7 @@ pub const commands = [_]Cli.Command{
     .{ .name = "lan", .args = "[--json|--tsv]", .summary = "可作上行的真实网卡", .group = .view, .run = lanList },
     .{ .name = "singbox-config", .summary = "打印将使用的 sing-box 配置", .group = .view, .run = singboxConfig },
     .{ .name = "set-node", .args = "[链接] [--ip IPv4] [--dry-run]", .summary = "设置 vless:// 节点 不给链接则从标准输入读", .group = .network, .run = setNode },
-    .{ .name = "node", .args = "list | add [链接] [--ip IPv4] [--use] | use <id> [--ip IPv4] | remove <id>", .summary = "保存多个节点 随时切换", .group = .network, .run = nodeCmd },
+    .{ .name = "node", .args = "list | parse [--url 订阅] | import [--use-first] | add [链接] [--ip IPv4] [--use] | use <id> [--ip IPv4] | remove <id>", .summary = "保存多个节点 随时切换 支持 vless hysteria2 tuic", .group = .network, .run = nodeCmd },
     .{ .name = "config", .args = "show | set <键> <值> | add|remove <列表> <值>", .summary = "上行 DNS 直连网段 排除网卡 健康检查", .group = .network, .run = config },
     .{ .name = "leaktest", .summary = "暂停 sing-box 验证真实网络被阻断 再恢复", .group = .network, .run = leaktest },
     .{ .name = "disable", .args = "--yes", .summary = "停守护进程 移除防火墙与黑洞 网络将直连", .group = .network, .run = disable },
@@ -268,12 +268,12 @@ fn singboxConfig(c: *Cli, _: []const [:0]const u8) !Exit {
 fn nodeFromArgs(c: *Cli, args: []const [:0]const u8, allow_unresolved: bool) !Node {
     var link: []const u8 = "";
     for (args) |a| {
-        if (std.mem.startsWith(u8, a, "vless://")) {
+        if (std.mem.indexOf(u8, a, "://") != null) {
             link = a;
         }
     }
     if (link.len == 0) {
-        try c.err.writeAll("粘贴 vless:// 链接后回车: ");
+        try c.err.writeAll("粘贴分享链接后回车: ");
         try c.err.flush();
         link = try c.readStdinLine();
     }
@@ -315,7 +315,8 @@ fn setNode(c: *Cli, args: []const [:0]const u8) !Exit {
                 .ip = node.ip,
                 .port = node.port,
                 .security = @tagName(node.security),
-                .transport = @tagName(node.transport),
+                .transport = node.kind(),
+                .protocol = @tagName(node.protocol),
                 .sni = node.sni,
                 .fingerprint = node.fingerprint,
                 .flow = node.flow,
@@ -323,8 +324,8 @@ fn setNode(c: *Cli, args: []const [:0]const u8) !Exit {
             return .ok;
         }
         try c.out.print("name={s}\nhost={s}\nip={s}\nport={d}\nsecurity={s}\ntransport={s}\nsni={s}\nfingerprint={s}\nflow={s}\n", .{
-            node.name,               node.host,                node.ip,  node.port,
-            @tagName(node.security), @tagName(node.transport), node.sni, node.fingerprint,
+            node.name,               node.host,   node.ip,  node.port,
+            @tagName(node.security), node.kind(), node.sni, node.fingerprint,
             node.flow,
         });
         return .ok;
@@ -333,12 +334,32 @@ fn setNode(c: *Cli, args: []const [:0]const u8) !Exit {
     return activate(c, node);
 }
 
+/// 所有流量都经这个节点 切换前先让随包 sing-box 校验配置 不过就保持原节点
 fn activate(c: *Cli, node: Node) !Exit {
+    if (checkNode(c, node)) |problem| {
+        return c.fail("sing-box 校验没通过 保持原节点 {s}", .{problem});
+    }
     try fsx.ensureDir(c.io, c.paths.etc);
     try node.save(c.io, c.gpa, c.etc("node.json"));
-    try c.ok("节点 {s} → {s}:{d}  {s}/{s}", .{ library.label(node), node.ip, node.port, @tagName(node.security), @tagName(node.transport) });
+    try c.ok("节点 {s} → {s}:{d}  {s}/{s}", .{ library.label(node), node.ip, node.port, @tagName(node.security), node.kind() });
     try notifyGuard(c);
     return .ok;
+}
+
+/// 返回 null 表示通过 否则是 sing-box 的报错
+fn checkNode(c: *Cli, node: Node) ?[]const u8 {
+    const cfg = loadConfig(c) catch return "net.json 无法读取";
+    var out: std.Io.Writer.Allocating = .init(c.arena);
+    singbox.render(&out.writer, cfg, node, "lo") catch return "生成配置失败";
+    fsx.ensureDir(c.io, c.paths.run) catch return "无法写入运行目录";
+    const path = c.runFile("node-check.json");
+    std.Io.Dir.cwd().writeFile(c.io, .{ .sub_path = path, .data = out.written(), .flags = .{ .permissions = .fromMode(0o600) } }) catch return "无法写入临时配置";
+    defer std.Io.Dir.cwd().deleteFile(c.io, path) catch {};
+    const r = std.process.run(c.arena, c.io, .{ .argv = &.{ cfg.singbox, "--disable-color", "check", "-c", path } }) catch return "无法运行 sing-box";
+    if (r.term == .exited and r.term.exited == 0) {
+        return null;
+    }
+    return std.mem.trim(u8, r.stderr, " \r\n");
 }
 
 fn nodeCmd(c: *Cli, args: []const [:0]const u8) !Exit {
@@ -348,8 +369,14 @@ fn nodeCmd(c: *Cli, args: []const [:0]const u8) !Exit {
     if (std.mem.eql(u8, sub, "list")) {
         return nodeList(c, dir);
     }
+    if (std.mem.eql(u8, sub, "parse")) {
+        return nodeParse(c, rest);
+    }
     if (!c.requireRoot()) {
         return .failed;
+    }
+    if (std.mem.eql(u8, sub, "import")) {
+        return nodeImport(c, dir, Cli.hasFlag(rest, "--use-first"));
     }
     if (std.mem.eql(u8, sub, "add")) {
         const node = nodeFromArgs(c, rest, false) catch return .failed;
@@ -386,6 +413,127 @@ fn nodeCmd(c: *Cli, args: []const [:0]const u8) !Exit {
     return c.usage("node list | add [链接] [--ip IPv4] [--use] | use <id> [--ip IPv4] | remove <id>");
 }
 
+fn readStdinAll(c: *Cli) ![]const u8 {
+    var buf: [4096]u8 = undefined;
+    var r = std.Io.File.stdin().reader(c.io, &buf);
+    return r.interface.allocRemaining(c.arena, .limited(4 << 20));
+}
+
+const subscription_agent = "v2rayN/7.0";
+
+/// 订阅只经隧道下载 不管是 wslb 还是另一套 kill-switch 都不会用真实 IP
+fn fetchSubscription(c: *Cli, url: []const u8) ![]const u8 {
+    if (!Control.alive()) {
+        const cfg = try loadConfig(c);
+        var sock = try netlink.Socket.open(0);
+        defer sock.close();
+        if (try Guard.foreignPresent(c.gpa, &sock, cfg) == null) {
+            try c.err.writeAll("隧道没有运行 先添加一个能用的节点再导入订阅\n");
+            return error.NoTunnel;
+        }
+    }
+    var client: std.http.Client = .{ .allocator = c.arena, .io = c.io };
+    defer client.deinit();
+    var body: std.Io.Writer.Allocating = .init(c.arena);
+    const res = client.fetch(.{
+        .location = .{ .url = url },
+        .response_writer = &body.writer,
+        .keep_alive = false,
+        .headers = .{ .user_agent = .{ .override = subscription_agent } },
+    }) catch |err| {
+        try c.err.print("下载订阅失败 {s}\n", .{@errorName(err)});
+        return err;
+    };
+    if (res.status != .ok) {
+        try c.err.print("订阅返回 HTTP {d}\n", .{@backingInt(res.status)});
+        return error.BadStatus;
+    }
+    return body.written();
+}
+
+/// 标准输入是剪贴板文本 或 --url 给订阅地址 只解析不保存
+fn nodeParse(c: *Cli, args: []const [:0]const u8) !Exit {
+    const text = if (Cli.flagValue(args, "--url")) |url|
+        fetchSubscription(c, url) catch return .failed
+    else
+        try readStdinAll(c);
+    if (library.looksLikeClash(text)) {
+        return c.fail("这是 Clash 配置 不是分享链接 订阅地址后面换成 v2rayN 格式再试", .{});
+    }
+    const lines = try library.shareLines(c.arena, text);
+    var s: std.json.Stringify = .{ .writer = c.out, .options = .{ .whitespace = .indent_2 } };
+    try s.beginObject();
+    try s.objectField("nodes");
+    try s.beginArray();
+    var unsupported: usize = 0;
+    var invalid: usize = 0;
+    for (lines) |line| {
+        const n = Node.parseLink(c.arena, line) catch |err| {
+            if (err == error.UnsupportedScheme) {
+                unsupported += 1;
+            } else {
+                invalid += 1;
+            }
+            continue;
+        };
+        try s.write(.{
+            .link = line,
+            .name = library.label(n),
+            .host = n.host,
+            .port = n.port,
+            .protocol = @tagName(n.protocol),
+            .kind = n.kind(),
+        });
+    }
+    try s.endArray();
+    try s.objectField("unsupported");
+    try s.write(unsupported);
+    try s.objectField("invalid");
+    try s.write(invalid);
+    try s.endObject();
+    try c.out.writeAll("\n");
+    return .ok;
+}
+
+/// 每行 `IP<TAB>链接` IP 由管理器在 Windows 侧解析 一次调用存下整批
+fn nodeImport(c: *Cli, dir: []const u8, use_first: bool) !Exit {
+    const text = try readStdinAll(c);
+    var saved: usize = 0;
+    var first: ?Node = null;
+    var it = std.mem.tokenizeAny(u8, text, "\r\n");
+    while (it.next()) |line| {
+        const tab = std.mem.indexOfScalar(u8, line, '\t') orelse continue;
+        var node = Node.parseLink(c.arena, line[tab + 1 ..]) catch |err| {
+            try c.bad("跳过 {s}", .{Node.errorText(err)});
+            continue;
+        };
+        const ip = line[0..tab];
+        if (ip.len != 0) {
+            _ = ip4.Addr.parse(ip) catch {
+                try c.bad("跳过 {s} IP 无效 {s}", .{ library.label(node), ip });
+                continue;
+            };
+            node.ip = ip;
+        } else if (!node.hostIsIp()) {
+            try c.bad("跳过 {s} 域名没有解析出 IP", .{library.label(node)});
+            continue;
+        }
+        _ = try library.save(c.io, c.gpa, dir, node);
+        try c.ok("{s}  {s}:{d}  {s}", .{ library.label(node), node.host, node.port, node.kind() });
+        saved += 1;
+        if (first == null) {
+            first = node;
+        }
+    }
+    try c.ok("共保存 {d} 个节点", .{saved});
+    if (use_first and loadNode(c) == null) {
+        if (first) |n| {
+            return activate(c, n);
+        }
+    }
+    return if (saved == 0) .failed else .ok;
+}
+
 /// 只用 set-node 设过的节点也补进列表
 fn nodeList(c: *Cli, dir: []const u8) !Exit {
     const active = loadNode(c);
@@ -412,7 +560,8 @@ fn nodeList(c: *Cli, dir: []const u8) !Exit {
                 .ip = e.node.ip,
                 .port = e.node.port,
                 .security = @tagName(e.node.security),
-                .transport = @tagName(e.node.transport),
+                .transport = e.node.kind(),
+                .protocol = @tagName(e.node.protocol),
                 .active = active_id != null and std.mem.eql(u8, &e.id, &active_id.?),
             });
         }

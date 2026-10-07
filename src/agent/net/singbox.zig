@@ -62,7 +62,10 @@ pub fn render(w: *std.Io.Writer, cfg: Config, node: Node, lan_if: []const u8) st
 
     try s.objectField("outbounds");
     try s.beginArray();
-    try writeVless(&s, node, lan_if);
+    switch (node.protocol) {
+        .vless => try writeVless(&s, node, lan_if),
+        .hysteria2, .tuic => try writeQuic(&s, node, lan_if),
+    }
     try s.write(.{ .type = "direct", .tag = "direct", .bind_interface = lan_if });
     try s.endArray();
 
@@ -96,6 +99,60 @@ pub fn render(w: *std.Io.Writer, cfg: Config, node: Node, lan_if: []const u8) st
 
     try s.endObject();
     try w.writeByte('\n');
+}
+
+/// hysteria2 与 tuic 走 QUIC 只有标准 TLS 不能加 utls 与 packet_encoding
+fn writeQuic(s: *std.json.Stringify, node: Node, lan_if: []const u8) std.Io.Writer.Error!void {
+    try s.beginObject();
+    try s.objectField("type");
+    try s.write(@tagName(node.protocol));
+    try s.objectField("tag");
+    try s.write("proxy");
+    try s.objectField("server");
+    try s.write(node.ip);
+    try s.objectField("server_port");
+    try s.write(node.port);
+    switch (node.protocol) {
+        .hysteria2 => {
+            try s.objectField("password");
+            try s.write(node.password);
+            if (node.obfs_password.len != 0) {
+                try s.objectField("obfs");
+                try s.write(.{ .type = "salamander", .password = node.obfs_password });
+            }
+        },
+        .tuic => {
+            try s.objectField("uuid");
+            try s.write(node.uuid);
+            try s.objectField("password");
+            try s.write(node.password);
+            try s.objectField("congestion_control");
+            try s.write(node.congestion);
+            try s.objectField("udp_relay_mode");
+            try s.write(node.udp_relay);
+        },
+        .vless => unreachable,
+    }
+    try s.objectField("bind_interface");
+    try s.write(lan_if);
+    try s.objectField("tls");
+    try s.beginObject();
+    try s.objectField("enabled");
+    try s.write(true);
+    if (node.sni.len != 0) {
+        try s.objectField("server_name");
+        try s.write(node.sni);
+    }
+    if (node.insecure) {
+        try s.objectField("insecure");
+        try s.write(true);
+    }
+    if (node.alpn.len != 0) {
+        try s.objectField("alpn");
+        try s.write(node.alpn);
+    }
+    try s.endObject();
+    try s.endObject();
 }
 
 fn writeVless(s: *std.json.Stringify, node: Node, lan_if: []const u8) std.Io.Writer.Error!void {
@@ -185,4 +242,24 @@ test "renders valid json" {
     const ob = parsed.value.object.get("outbounds").?.array.items[0].object;
     try std.testing.expectEqualStrings("cdn.h.com", ob.get("transport").?.object.get("headers").?.object.get("Host").?.string);
     try std.testing.expectEqualStrings("eth2", ob.get("bind_interface").?.string);
+}
+
+test "quic outbounds carry no utls" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    for ([_][]const u8{
+        "hy2://pw@h.example.com:443?obfs-password=ob#a",
+        "tuic://11111111-1111-1111-1111-111111111111:pw@t.example.com:443?alpn=h3#b",
+    }) |link| {
+        var node = try Node.parseLink(a, link);
+        node.ip = "203.0.113.5";
+        var out: std.Io.Writer.Allocating = .init(a);
+        try render(&out.writer, .{}, node, "eth2");
+        const parsed = try std.json.parseFromSlice(std.json.Value, a, out.written(), .{});
+        const ob = parsed.value.object.get("outbounds").?.array.items[0].object;
+        try std.testing.expectEqualStrings(@tagName(node.protocol), ob.get("type").?.string);
+        try std.testing.expect(ob.get("tls").?.object.get("utls") == null);
+        try std.testing.expect(ob.get("packet_encoding") == null);
+    }
 }

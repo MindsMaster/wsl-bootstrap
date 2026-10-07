@@ -93,6 +93,9 @@ ip route add default via 192.168.50.1 dev lan0 metric 100
 
 cat >"$WORK/fake-singbox" <<'EOF'
 #!/usr/bin/env bash
+if [[ " $* " == *" check "* ]]; then
+  exit 0
+fi
 exec sleep 3600
 EOF
 chmod +x "$WORK/fake-singbox"

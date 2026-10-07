@@ -10,6 +10,11 @@ pub fn id(n: Node) [8]u8 {
     h.update(n.uuid);
     h.update(n.host);
     h.update(std.mem.asBytes(&n.port));
+    // vless 保持旧算法 已保存的 id 不变
+    if (n.protocol != .vless) {
+        h.update(@tagName(n.protocol));
+        h.update(n.password);
+    }
     var out: [8]u8 = undefined;
     _ = std.fmt.bufPrint(&out, "{x:0>8}", .{@as(u32, @truncate(h.final()))}) catch unreachable;
     return out;
@@ -79,6 +84,51 @@ pub fn list(io: std.Io, arena: Allocator, dir: []const u8) ![]Entry {
     return out.items;
 }
 
+/// 剪贴板或订阅的内容 整段 base64 先解开 再按行取出带 :// 的链接
+pub fn shareLines(arena: Allocator, text: []const u8) ![]const []const u8 {
+    const body = (try maybeBase64(arena, text)) orelse text;
+    var out: std.ArrayList([]const u8) = .empty;
+    var it = std.mem.tokenizeAny(u8, body, "\r\n");
+    while (it.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t");
+        if (line.len == 0 or line[0] == '#' or std.mem.indexOf(u8, line, "://") == null) {
+            continue;
+        }
+        try out.append(arena, line);
+    }
+    return out.items;
+}
+
+pub fn looksLikeClash(text: []const u8) bool {
+    return std.mem.indexOf(u8, text, "proxies:") != null and std.mem.indexOf(u8, text, "rules:") != null;
+}
+
+fn maybeBase64(arena: Allocator, text: []const u8) !?[]const u8 {
+    var compact: std.ArrayList(u8) = .empty;
+    for (text) |ch| {
+        if (std.ascii.isWhitespace(ch)) {
+            continue;
+        }
+        if (!std.ascii.isAlphanumeric(ch) and std.mem.indexOfScalar(u8, "+/=-_", ch) == null) {
+            return null;
+        }
+        try compact.append(arena, ch);
+    }
+    if (compact.items.len <= 16) {
+        return null;
+    }
+    const trimmed = std.mem.trimEnd(u8, compact.items, "=");
+    const urlsafe = std.mem.indexOfAny(u8, trimmed, "-_") != null;
+    const dec = if (urlsafe) std.base64.url_safe_no_pad.Decoder else std.base64.standard_no_pad.Decoder;
+    const size = dec.calcSizeForSlice(trimmed) catch return null;
+    const buf = try arena.alloc(u8, size);
+    dec.decode(buf, trimmed) catch return null;
+    if (std.mem.indexOf(u8, buf, "://") == null or !std.unicode.utf8ValidateSlice(buf)) {
+        return null;
+    }
+    return buf;
+}
+
 pub fn label(n: Node) []const u8 {
     return if (n.name.len != 0) n.name else n.host;
 }
@@ -105,4 +155,18 @@ test "id is stable and ignores name and ip" {
     try std.testing.expectEqualSlices(u8, &id(a), &id(b));
     try std.testing.expect(!valid("../etc/x"));
     try std.testing.expect(valid(&id(a)));
+}
+
+test "share text plain base64 and noise" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const plain = "vless://u@a.com:443#a\n\n# note\nhello\r\nhy2://pw@b.com:443#b\n";
+    try std.testing.expectEqual(@as(usize, 2), (try shareLines(a, plain)).len);
+    const enc = try a.alloc(u8, std.base64.standard.Encoder.calcSize(plain.len));
+    _ = std.base64.standard.Encoder.encode(enc, plain);
+    const lines = try shareLines(a, enc);
+    try std.testing.expectEqual(@as(usize, 2), lines.len);
+    try std.testing.expectEqualStrings("hy2://pw@b.com:443#b", lines[1]);
+    try std.testing.expect(looksLikeClash("proxies:\n  - a\nrules:\n"));
 }
