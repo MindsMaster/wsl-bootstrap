@@ -19,6 +19,8 @@ pub const Field = struct {
     hint: []const u8 = "",
     /// 收在高级选项里 默认值已可用
     advanced: bool = false,
+    /// 开关的推荐值 符合时绿色 不符合时黄色 没有推荐时开绿关红
+    recommend: ?bool = null,
 
     pub fn text(f: *const Field) []const u8 {
         return f.buf[0..f.len];
@@ -92,7 +94,10 @@ pub const Field = struct {
                 }
             },
             .choice => _ = s.print(x, y, style, "‹ {s} ›", .{f.selected()}),
-            .toggle => _ = s.put(x, y, if (f.on) "‹ 开 ›" else "‹ 关 ›", if (f.on) Screen.Style.good else .bad),
+            .toggle => {
+                const tone: Screen.Style = if (f.recommend) |r| (if (r == f.on) .good else .warn) else if (f.on) .good else .bad;
+                _ = s.put(x, y, if (f.on) "‹ 开 ›" else "‹ 关 ›", tone);
+            },
         }
     }
 };

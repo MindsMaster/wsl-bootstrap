@@ -70,7 +70,7 @@ pub fn items(app: *App, a: std.mem.Allocator) ![]const Menu.Item {
         });
     }
     return a.dupe(Menu.Item, &.{
-        .{ .label = "编辑 .wslconfig", .desc = "内存 处理器 swap 同时写入 virtiofs 与防泄露推荐项", .run = openConfigForm },
+        .{ .label = "编辑 .wslconfig", .desc = "内存 处理器 swap 网络模式 virtiofs dnsTunneling autoProxy IPv6", .run = openConfigForm },
         .{ .label = "更新到预发行版", .desc = "wsl --update --pre-release 需要管理员确认", .run = askUpdate },
         .{ .label = "关闭全部 WSL", .desc = "wsl --shutdown 所有发行版一起停止", .danger = true, .run = askShutdown },
     });
@@ -159,7 +159,11 @@ fn openConfigForm(app: *App, _: []const u8) void {
         .{ .id = "memory", .label = "内存上限", .hint = "例如 8GB" },
         .{ .id = "processors", .label = "处理器数" },
         .{ .id = "swap", .label = "swap 大小" },
-        .{ .id = "mirrored", .label = "mirrored 网络", .kind = .toggle, .on = true, .hint = "Windows 11 22H2 以上 网络防护按它设计" },
+        .{ .id = "mirrored", .recommend = true, .label = "mirrored 网络", .kind = .toggle, .on = cur.mirrored or app.info.wslconfig.len == 0, .hint = "Windows 11 22H2 以上 网络防护按它设计" },
+        .{ .id = "virtiofs", .recommend = true, .label = "virtiofs", .kind = .toggle, .on = cur.virtiofs or app.info.wslconfig.len == 0, .hint = "/mnt 读写更快 需要预发行版 WSL" },
+        .{ .id = "dns_tunneling", .recommend = false, .label = "dnsTunneling", .kind = .toggle, .on = cur.dns_tunneling and app.info.wslconfig.len != 0, .hint = "开启后 DNS 交给 Windows 解析 会绕过隧道 建议关" },
+        .{ .id = "auto_proxy", .recommend = false, .label = "autoProxy", .kind = .toggle, .on = cur.auto_proxy and app.info.wslconfig.len != 0, .hint = "开启后注入 Windows 的代理设置 程序可能绕过隧道 建议关" },
+        .{ .id = "ipv6", .recommend = false, .label = "IPv6", .kind = .toggle, .on = cur.ipv6 and app.info.wslconfig.len != 0, .hint = "防护只管 IPv4 建议关" },
     };
     fields[0].setText(if (cur.memory.len != 0) cur.memory else mem_default);
     fields[1].setText(if (cur.processors.len != 0) cur.processors else cpu_default);
@@ -182,6 +186,10 @@ fn submitConfig(app: *App, f: *Form) void {
         .processors = f.get("processors").text(),
         .swap = f.get("swap").text(),
         .mirrored = f.get("mirrored").on,
+        .virtiofs = f.get("virtiofs").on,
+        .dns_tunneling = f.get("dns_tunneling").on,
+        .auto_proxy = f.get("auto_proxy").on,
+        .ipv6 = f.get("ipv6").on,
     }) catch {
         f.error_text = "合并失败";
         return;
