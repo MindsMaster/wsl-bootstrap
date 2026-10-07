@@ -1,7 +1,7 @@
 const std = @import("std");
 const App = @import("../App.zig");
 const Form = @import("../ui/Form.zig");
-const Key = @import("../term/keys.zig").Key;
+const Menu = @import("../ui/Menu.zig");
 const Screen = @import("../term/Screen.zig");
 const Wsl = @import("../Wsl.zig");
 const create = @import("../job/create.zig");
@@ -30,57 +30,42 @@ pub fn userList(app: *App, buf: []Wsl.Distro) []Wsl.Distro {
     return buf[0..n];
 }
 
-pub fn draw(app: *App, s: *Screen) void {
+pub fn draw(app: *App, s: *Screen) usize {
     var buf: [64]Wsl.Distro = undefined;
-    const list = userList(app, &buf);
-    _ = s.put(2, 2, "发行版", .title);
-    if (list.len == 0) {
-        _ = s.put(4, 4, "还没有用户发行版 按 n 新建", .muted);
+    if (userList(app, &buf).len == 0) {
+        _ = s.put(2, 2, "还没有用户发行版", .muted);
+        return 3;
     }
-    for (list, 0..) |d, i| {
-        const y = 4 + i;
-        const style: Screen.Style = if (i == app.cursor) .selected else .normal;
-        _ = s.print(4, y, style, " {s}{s: <24} {s: <8} WSL{d} ", .{
-            if (d.default) "* " else "  ",
-            d.name,
-            switch (d.state) {
-                .running => "运行中",
-                .stopped => "已停止",
-                .installing => "安装中",
-                .other => "未知",
-            },
-            d.version,
+    _ = s.put(2, 2, "网络发行版与 Docker 的不在这里管理", .muted);
+    return 3;
+}
+
+pub fn items(app: *App, a: std.mem.Allocator) ![]const Menu.Item {
+    var buf: [64]Wsl.Distro = undefined;
+    var list: std.ArrayList(Menu.Item) = .empty;
+    for (userList(app, &buf)) |d| {
+        const state = switch (d.state) {
+            .running => "运行中",
+            .stopped => "已停止",
+            .installing => "安装中",
+            .other => "未知",
+        };
+        try list.append(a, .{
+            .label = d.name,
+            .note = try std.fmt.allocPrint(a, "{s}" ++ Screen.glyph.dot ++ "WSL{d}{s}", .{ state, d.version, if (d.default) Screen.glyph.dot ++ "默认" else "" }),
+            .run = openDetail,
+            .arg = d.name,
         });
     }
-    const y = 5 + list.len;
-    _ = s.put(2, y, "操作", .title);
-    _ = s.put(4, y + 1, "↑↓ 选择   回车 详情与管理   n 新建   o 打开终端", .key);
+    try list.append(a, .{ .label = "+ 新建发行版", .desc = "Ubuntu 或 Debian 装好后自动受网络防护", .run = openCreate });
+    return list.items;
 }
 
-pub fn key(app: *App, k: Key) bool {
-    var buf: [64]Wsl.Distro = undefined;
-    const list = userList(app, &buf);
-    switch (k) {
-        .up => app.cursor -|= 1,
-        .down => if (app.cursor + 1 < list.len) {
-            app.cursor += 1;
-        },
-        .enter => if (app.cursor < list.len) {
-            app.openDetail(list[app.cursor].name);
-        },
-        .char => |c| switch (c) {
-            'n' => openCreate(app),
-            'o' => if (app.cursor < list.len) {
-                winsys.openShell(app.modalAlloc(), list[app.cursor].name) catch |err| app.setMessage("打开终端失败 {s}", .{@errorName(err)});
-            },
-            else => return false,
-        },
-        else => return false,
-    }
-    return true;
+fn openDetail(app: *App, name: []const u8) void {
+    app.openDetail(name);
 }
 
-fn openCreate(app: *App) void {
+fn openCreate(app: *App, _: []const u8) void {
     const vendor = winsys.gpuVendor(app.info.gpu);
     var gpu_index: usize = 0;
     for (gpus, 0..) |g, i| {
@@ -96,15 +81,15 @@ fn openCreate(app: *App) void {
         .{ .id = "user", .label = "用户名", .hint = "小写字母开头 可含数字 _ -" },
         .{ .id = "password", .label = "密码", .kind = .password },
         .{ .id = "password2", .label = "再输一次", .kind = .password },
-        .{ .id = "tz_mode", .label = "时区", .kind = .choice, .choices = &tz_modes, .hint = "auto 跟随出口 IP  fixed 手动  windows 不管理" },
-        .{ .id = "timezone", .label = "固定时区", .hint = "fixed 时填 例如 America/Los_Angeles" },
-        .{ .id = "locale", .label = "语言", .kind = .choice, .choices = &locales, .hint = "系统与浏览器语言 与出口地区一致更不显眼" },
-        .{ .id = "ntp", .label = "NTS 对时", .kind = .toggle, .on = true },
         .{ .id = "firefox", .label = "Firefox", .kind = .toggle, .on = true, .hint = "Mozilla 官方 deb 不用 snap" },
-        .{ .id = "gpu", .label = "WebGL 显卡", .kind = .choice, .choices = &gpus, .choice = gpu_index, .hint = app.modalAlloc().dupe(u8, app.info.gpu) catch "" },
-        .{ .id = "webrtc", .label = "WebRTC 防泄露", .kind = .toggle, .on = true },
-        .{ .id = "hide_claude", .label = "隐藏 Windows 侧 Claude 数据", .kind = .toggle },
-        .{ .id = "default", .label = "设为默认发行版", .kind = .toggle, .on = true },
+        .{ .id = "tz_mode", .label = "时区", .kind = .choice, .choices = &tz_modes, .hint = "auto 跟随出口 IP  fixed 手动  windows 不管理", .advanced = true },
+        .{ .id = "timezone", .label = "固定时区", .hint = "fixed 时填 例如 America/Los_Angeles", .advanced = true },
+        .{ .id = "locale", .label = "语言", .kind = .choice, .choices = &locales, .hint = "系统与浏览器语言 与出口地区一致更不显眼", .advanced = true },
+        .{ .id = "ntp", .label = "NTS 对时", .kind = .toggle, .on = true, .advanced = true },
+        .{ .id = "gpu", .label = "WebGL 显卡", .kind = .choice, .choices = &gpus, .choice = gpu_index, .hint = app.modalAlloc().dupe(u8, app.info.gpu) catch "", .advanced = true },
+        .{ .id = "webrtc", .label = "WebRTC 防泄露", .kind = .toggle, .on = true, .advanced = true },
+        .{ .id = "hide_claude", .label = "隐藏 Claude 数据", .kind = .toggle, .hint = "在 WSL 里遮蔽 Windows 侧的 .claude 目录", .advanced = true },
+        .{ .id = "default", .label = "设为默认发行版", .kind = .toggle, .on = true, .advanced = true },
     };
     fields[1].setText(Wsl.catalog[0].id);
     fields[2].setText(root);
@@ -117,6 +102,7 @@ fn openCreate(app: *App) void {
         fields[3].setText(lower[0..n]);
     }
     app.openForm("新建发行版", &fields, submitCreate);
+    app.modal.form.form.submit_label = "创建";
 }
 
 fn dirExists(app: *App, path: []const u8) bool {

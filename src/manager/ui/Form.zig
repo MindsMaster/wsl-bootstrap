@@ -16,8 +16,8 @@ pub const Field = struct {
     choice: usize = 0,
     on: bool = false,
     hint: []const u8 = "",
-    /// 为 false 时不显示 也不能聚焦 例如固定时区以外隐藏时区输入
-    visible: bool = true,
+    /// 收在高级选项里 默认值已可用
+    advanced: bool = false,
 
     pub fn text(f: *const Field) []const u8 {
         return f.buf[0..f.len];
@@ -50,12 +50,60 @@ pub const Field = struct {
             }
         }
     }
+
+    fn edit(f: *Field, k: Key) void {
+        switch (f.kind) {
+            .text, .password => switch (k) {
+                .backspace => f.popChar(),
+                .char => |c| f.pushChar(c),
+                else => {},
+            },
+            .choice => {
+                const n = f.choices.len;
+                if (k == .left) {
+                    f.choice = (f.choice + n - 1) % n;
+                } else if (k == .right or k.isChar(' ')) {
+                    f.choice = (f.choice + 1) % n;
+                }
+            },
+            .toggle => if (k == .left or k == .right or k.isChar(' ')) {
+                f.on = !f.on;
+            },
+        }
+    }
+
+    fn drawValue(f: *const Field, s: *Screen, x: usize, y: usize, focused: bool) void {
+        const style: Screen.Style = if (focused) .focus else .normal;
+        switch (f.kind) {
+            .text, .password => {
+                var stars: [256]u8 = undefined;
+                const shown = if (f.kind == .password) blk: {
+                    @memset(stars[0..f.len], '*');
+                    break :blk stars[0..f.len];
+                } else f.text();
+                const end = s.put(x, y, shown, .normal);
+                if (focused) {
+                    _ = s.put(end, y, " ", .selected);
+                }
+            },
+            .choice => _ = s.print(x, y, style, "‹ {s} ›", .{f.selected()}),
+            .toggle => _ = s.put(x, y, if (f.on) "‹ 开 ›" else "‹ 关 ›", if (f.on) Screen.Style.good else .muted),
+        }
+    }
 };
 
 pub const Outcome = enum { none, submit, cancel };
 
+const Row = union(enum) {
+    field: usize,
+    advanced,
+    submit,
+};
+
 title: []const u8,
 fields: []Field,
+submit_label: []const u8 = "确定",
+show_advanced: bool = false,
 focus: usize = 0,
 error_text: []const u8 = "",
 
@@ -68,129 +116,126 @@ pub fn get(f: *Form, id: []const u8) *Field {
     unreachable;
 }
 
-fn move(f: *Form, dir: isize) void {
-    var i: isize = @intCast(f.focus);
-    for (0..f.fields.len) |_| {
-        i = @mod(i + dir, @as(isize, @intCast(f.fields.len)));
-        if (f.fields[@intCast(i)].visible) {
-            f.focus = @intCast(i);
-            return;
-        }
-    }
-}
-
-fn lastVisible(f: *const Form) usize {
-    var last: usize = 0;
+fn rows(f: *const Form, buf: []Row) []Row {
+    var n: usize = 0;
+    var hidden: usize = 0;
     for (f.fields, 0..) |field, i| {
-        if (field.visible) {
-            last = i;
+        if (field.advanced and !f.show_advanced) {
+            hidden += 1;
+            continue;
         }
+        buf[n] = .{ .field = i };
+        n += 1;
     }
-    return last;
+    if (hidden != 0 or f.show_advanced) {
+        buf[n] = .advanced;
+        n += 1;
+    }
+    buf[n] = .submit;
+    return buf[0 .. n + 1];
 }
 
-/// 回车在最后一项提交 其余项跳到下一项
+fn advancedCount(f: *const Form) usize {
+    var n: usize = 0;
+    for (f.fields) |field| {
+        if (field.advanced) {
+            n += 1;
+        }
+    }
+    return n;
+}
+
+/// 回车在字段上跳到下一项 在确定上提交
 pub fn key(f: *Form, k: Key) Outcome {
-    const field = &f.fields[f.focus];
+    var buf: [64]Row = undefined;
+    const list = f.rows(&buf);
+    f.focus = @min(f.focus, list.len - 1);
+    const row = list[f.focus];
+    f.error_text = "";
     switch (k) {
         .escape => return .cancel,
-        .up, .back_tab => f.move(-1),
-        .down, .tab => f.move(1),
-        .enter => {
-            if (f.focus == f.lastVisible()) {
-                return .submit;
-            }
-            f.move(1);
+        .up, .back_tab => f.focus = if (f.focus == 0) list.len - 1 else f.focus - 1,
+        .down, .tab => f.focus = (f.focus + 1) % list.len,
+        .enter => switch (row) {
+            .submit => return .submit,
+            .advanced => f.show_advanced = !f.show_advanced,
+            .field => f.focus += 1,
         },
-        .left, .right => switch (field.kind) {
-            .choice => {
-                const n = field.choices.len;
-                field.choice = if (k == .left) (field.choice + n - 1) % n else (field.choice + 1) % n;
+        else => switch (row) {
+            .field => |i| f.fields[i].edit(k),
+            .advanced => if (k == .left or k == .right or k.isChar(' ')) {
+                f.show_advanced = !f.show_advanced;
             },
-            .toggle => field.on = !field.on,
-            else => {},
+            .submit => {},
         },
-        .backspace => if (field.kind == .text or field.kind == .password) field.popChar(),
-        .char => |c| switch (field.kind) {
-            .text, .password => field.pushChar(c),
-            .toggle => if (c == ' ') {
-                field.on = !field.on;
-            },
-            .choice => if (c == ' ') {
-                field.choice = (field.choice + 1) % field.choices.len;
-            },
-        },
-        else => {},
     }
-    f.error_text = "";
     return .none;
 }
 
-pub fn draw(f: *const Form, s: *Screen) void {
-    var visible: usize = 0;
+fn rowHeight(f: *const Form, row: Row, focused: bool) usize {
+    return switch (row) {
+        .field => |i| if (focused and f.fields[i].hint.len != 0) 2 else 1,
+        .advanced => 1,
+        .submit => 2,
+    };
+}
+
+/// 在 y0 到 bottom 之间画 放不下时滚动到聚焦行可见
+pub fn draw(f: *const Form, s: *Screen, y0: usize, bottom: usize) void {
+    var buf: [64]Row = undefined;
+    const list = f.rows(&buf);
     var label_w: usize = 0;
-    for (f.fields) |field| {
-        if (field.visible) {
-            visible += 1;
-            label_w = @max(label_w, Screen.textWidth(field.label));
+    for (list) |row| {
+        if (row == .field) {
+            label_w = @max(label_w, Screen.textWidth(f.fields[row.field].label));
         }
     }
-    const w = @min(@as(usize, s.width) -| 4, 76);
-    const h = @min(visible * 2 + 5, @as(usize, s.height) -| 2);
-    const x = (@as(usize, s.width) - w) / 2;
-    const y = (@as(usize, s.height) -| h) / 2;
-    s.box(x, y, w, h, f.title, .title);
-    var row = y + 2;
-    for (f.fields, 0..) |field, i| {
-        if (!field.visible or row + 1 >= y + h - 2) {
+    const vx = 6 + label_w;
+    const room = bottom -| y0 -| @as(usize, if (f.error_text.len != 0) 2 else 0);
+    var focus_end: usize = 0;
+    for (list[0 .. f.focus + 1], 0..) |row, i| {
+        focus_end += f.rowHeight(row, i == f.focus);
+    }
+    const skip = focus_end -| room;
+    var y: usize = 0;
+    for (list, 0..) |row, i| {
+        const focused = i == f.focus;
+        const top = y;
+        y += f.rowHeight(row, focused);
+        if (top < skip or y - skip > room) {
             continue;
         }
-        const focused = i == f.focus;
-        _ = s.put(x + 2, row, field.label, if (focused) Screen.Style.title else .normal);
-        const vx = x + 4 + label_w;
-        const max = x + w - 2;
-        switch (field.kind) {
-            .text => {
-                const end = s.putMax(vx, row, max, field.text(), if (focused) Screen.Style.selected else .normal);
-                if (focused) {
-                    _ = s.putMax(end, row, max, "_", .selected);
+        var line = y0 + top - skip;
+        if (row == .submit) {
+            line += 1;
+        }
+        if (focused) {
+            _ = s.put(2, line, Screen.glyph.pointer, .focus);
+        }
+        switch (row) {
+            .field => |fi| {
+                const field = &f.fields[fi];
+                _ = s.put(4, line, field.label, if (focused) Screen.Style.focus else .normal);
+                field.drawValue(s, vx, line, focused);
+                if (focused and field.hint.len != 0) {
+                    _ = s.put(vx, line + 1, field.hint, .muted);
                 }
             },
-            .password => {
-                var stars: [64]u8 = undefined;
-                const n = @min(field.len, stars.len);
-                @memset(stars[0..n], '*');
-                const end = s.putMax(vx, row, max, stars[0..n], if (focused) Screen.Style.selected else .normal);
-                if (focused) {
-                    _ = s.putMax(end, row, max, "_", .selected);
-                }
+            .advanced => {
+                _ = s.print(4, line, if (focused) Screen.Style.focus else .muted, "{s} 高级选项 {d} 项", .{ if (f.show_advanced) "▾" else "▸", f.advancedCount() });
             },
-            .choice => {
-                var buf: [128]u8 = undefined;
-                const t = std.fmt.bufPrint(&buf, "< {s} >", .{field.selected()}) catch "";
-                _ = s.putMax(vx, row, max, t, if (focused) Screen.Style.selected else .normal);
-            },
-            .toggle => {
-                _ = s.putMax(vx, row, max, if (field.on) "[x] 是" else "[ ] 否", if (focused) Screen.Style.selected else .normal);
-            },
+            .submit => _ = s.put(4, line, f.submit_label, if (focused) Screen.Style.title else .strong),
         }
-        if (field.hint.len != 0) {
-            _ = s.putMax(vx, row + 1, max, field.hint, .muted);
-        }
-        row += 2;
     }
     if (f.error_text.len != 0) {
-        _ = s.putMax(x + 2, y + h - 2, x + w - 2, f.error_text, .bad);
-    } else {
-        _ = s.putMax(x + 2, y + h - 2, x + w - 2, "↑↓ 切换  ←→ 选择  回车 下一项或确定  Esc 取消", .muted);
+        _ = s.mark(2, y0 + @min(y -| skip, room) + 1, .bad, f.error_text);
     }
 }
 
-test "navigation skips hidden fields and submits on last" {
+test "advanced fields stay folded until opened and submit is its own row" {
     var fields = [_]Field{
         .{ .id = "a", .label = "A" },
-        .{ .id = "b", .label = "B", .visible = false },
-        .{ .id = "c", .label = "C", .kind = .toggle },
+        .{ .id = "b", .label = "B", .kind = .toggle, .advanced = true },
     };
     var f: Form = .{ .title = "t", .fields = &fields };
     _ = f.key(.{ .char = 'x' });
@@ -199,8 +244,11 @@ test "navigation skips hidden fields and submits on last" {
     _ = f.key(.backspace);
     try std.testing.expectEqualStrings("x", f.get("a").text());
     try std.testing.expectEqual(Outcome.none, f.key(.enter));
-    try std.testing.expectEqual(@as(usize, 2), f.focus);
+    try std.testing.expectEqual(Outcome.none, f.key(.enter));
+    try std.testing.expect(f.show_advanced);
     _ = f.key(.{ .char = ' ' });
-    try std.testing.expect(f.get("c").on);
+    try std.testing.expect(f.get("b").on);
+    _ = f.key(.down);
+    _ = f.key(.down);
     try std.testing.expectEqual(Outcome.submit, f.key(.enter));
 }

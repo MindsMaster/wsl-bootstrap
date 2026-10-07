@@ -96,6 +96,7 @@ test {
     _ = @import("term/Screen.zig");
     _ = @import("term/keys.zig");
     _ = @import("ui/Form.zig");
+    _ = @import("ui/Menu.zig");
     _ = @import("winsys.zig");
     _ = @import("wslconfig.zig");
 }

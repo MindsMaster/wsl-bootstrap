@@ -3,6 +3,7 @@ const Env = @import("job/Env.zig");
 const Form = @import("ui/Form.zig");
 const Key = @import("term/keys.zig").Key;
 const Log = @import("Log.zig");
+const Menu = @import("ui/Menu.zig");
 const Runner = @import("Runner.zig");
 const Screen = @import("term/Screen.zig");
 const Wsl = @import("Wsl.zig");
@@ -29,6 +30,8 @@ pub const Page = union(enum) {
 pub const DistroDetail = struct {
     name: []const u8 = "",
     os: []const u8 = "",
+    firefox: bool = false,
+    hide_claude: bool = false,
     agent: []const u8 = "",
     identity: struct {
         timezone_mode: []const u8 = "",
@@ -62,6 +65,16 @@ pub const Job = struct {
     info: ?*Info = null,
 };
 
+pub const Confirm = struct {
+    title: []const u8,
+    text: []const u8,
+    yes_label: []const u8,
+    danger: bool = false,
+    arg: []const u8 = "",
+    /// 非空时要求输入这个名字才算确认 用于删除
+    typed: []const u8 = "",
+};
+
 pub const Modal = union(enum) {
     none,
     form: struct {
@@ -69,13 +82,10 @@ pub const Modal = union(enum) {
         submit: *const fn (*App, *Form) void,
     },
     confirm: struct {
-        title: []const u8,
-        text: []const u8,
-        /// 非空时要求输入这个名字才算确认 用于删除
-        typed: []const u8 = "",
+        opts: Confirm,
         input: [64]u8 = undefined,
         input_len: usize = 0,
-        arg: []const u8 = "",
+        cursor: usize = 0,
         yes: *const fn (*App, []const u8) void,
     },
     log,
@@ -91,10 +101,14 @@ tab: Tab = .wsl,
 /// 指向 detail_buf 刷新换掉 info 后名字仍然有效
 detail: ?[]const u8 = null,
 detail_buf: [64]u8 = undefined,
-cursor: usize = 0,
+/// 每页各自记住选中项 下标同 Page 的 tag
+cursors: [4]usize = .{ 0, 0, 0, 0 },
 modal: Modal = .none,
 /// 弹窗里用到的字符串 关闭弹窗时一起释放
 modal_arena: std.heap.ArenaAllocator,
+/// 菜单项的文字 每帧重建
+frame_arena: std.heap.ArenaAllocator,
+frame: usize = 0,
 info: *Info,
 job: ?*Job = null,
 /// 最近一个结束的任务 留着给 L 查看日志
@@ -118,6 +132,7 @@ pub fn init(gpa: Allocator, io: std.Io, env: *const std.process.Environ.Map, run
         .wsl = .{ .runner = runner },
         .screen = .init(gpa),
         .modal_arena = .init(gpa),
+        .frame_arena = .init(gpa),
         .info = info,
         .system_root = env.get("SystemRoot") orelse "C:\\Windows",
         .temp_dir = env.get("TEMP") orelse ".",
@@ -139,6 +154,7 @@ pub fn deinit(app: *App) void {
     app.info.arena.deinit();
     app.gpa.destroy(app.info);
     app.modal_arena.deinit();
+    app.frame_arena.deinit();
     app.screen.deinit();
 }
 
@@ -176,19 +192,14 @@ pub fn openForm(app: *App, title: []const u8, fields: []const Form.Field, submit
     app.modal = .{ .form = .{ .form = .{ .title = title, .fields = copy }, .submit = submit } };
 }
 
-pub fn confirm(app: *App, title: []const u8, text: []const u8, arg: []const u8, yes: *const fn (*App, []const u8) void) void {
+pub fn confirm(app: *App, opts: Confirm, yes: *const fn (*App, []const u8) void) void {
     const a = app.modalAlloc();
-    app.modal = .{ .confirm = .{
-        .title = a.dupe(u8, title) catch title,
-        .text = a.dupe(u8, text) catch text,
-        .arg = a.dupe(u8, arg) catch arg,
-        .yes = yes,
-    } };
-}
-
-pub fn confirmTyped(app: *App, title: []const u8, text: []const u8, name: []const u8, yes: *const fn (*App, []const u8) void) void {
-    app.confirm(title, text, name, yes);
-    app.modal.confirm.typed = app.modal.confirm.arg;
+    var o = opts;
+    o.title = a.dupe(u8, opts.title) catch opts.title;
+    o.text = a.dupe(u8, opts.text) catch opts.text;
+    o.arg = a.dupe(u8, opts.arg) catch opts.arg;
+    o.typed = a.dupe(u8, opts.typed) catch opts.typed;
+    app.modal = .{ .confirm = .{ .opts = o, .yes = yes } };
 }
 
 pub fn note(app: *App, title: []const u8, text: []const u8) void {
@@ -267,9 +278,6 @@ fn reapJob(app: *App) void {
         app.info.arena.deinit();
         app.gpa.destroy(app.info);
         app.info = fresh;
-        if (app.cursor >= app.info.distros.len) {
-            app.cursor = 0;
-        }
     }
     app.job = null;
     if (job.refresh) {
@@ -328,7 +336,7 @@ pub fn tick(app: *App) void {
         return;
     }
     if (app.modal != .log) {
-        app.setMessage("{s} {s}", .{ job.title, if (job.log.failed) "失败 按 L 看日志" else "完成" });
+        app.setMessage("{s} {s}", .{ job.title, if (job.log.failed) "失败 按 l 看日志" else "完成" });
         app.reapJob();
         app.refresh();
     }
@@ -350,34 +358,7 @@ pub fn key(app: *App, k: Key) void {
             return;
         },
         .confirm => |*m| {
-            if (m.typed.len != 0) {
-                switch (k) {
-                    .escape => app.closeModal(),
-                    .backspace => m.input_len -|= 1,
-                    .enter => if (std.mem.eql(u8, m.input[0..m.input_len], m.typed)) {
-                        const yes = m.yes;
-                        const arg = app.gpa.dupe(u8, m.arg) catch return;
-                        defer app.gpa.free(arg);
-                        app.closeModal();
-                        yes(app, arg);
-                    },
-                    .char => |c| if (c < 0x80 and m.input_len < m.input.len) {
-                        m.input[m.input_len] = @intCast(c);
-                        m.input_len += 1;
-                    },
-                    else => {},
-                }
-                return;
-            }
-            if (k.isChar('y') or k.isChar('Y') or k == .enter) {
-                const yes = m.yes;
-                const arg = app.gpa.dupe(u8, m.arg) catch return;
-                defer app.gpa.free(arg);
-                app.closeModal();
-                yes(app, arg);
-            } else if (k.isChar('n') or k.isChar('N') or k == .escape) {
-                app.closeModal();
-            }
+            app.confirmKey(m, k);
             return;
         },
         .log => {
@@ -402,44 +383,88 @@ pub fn key(app: *App, k: Key) void {
             return;
         },
     }
-    if (k.isChar('q')) {
-        app.quit = true;
-        return;
-    }
-    if (k.isChar('L') and (app.job != null or app.last != null)) {
-        app.modal = .log;
-        return;
-    }
-    if (k.isChar('r')) {
-        app.refresh();
-        return;
-    }
-    const handled = switch (app.page()) {
-        .wsl => page_wsl.key(app, k),
-        .network => page_network.key(app, k),
-        .distros => page_distros.key(app, k),
-        .distro => page_distro.key(app, k),
-    };
-    if (handled) {
-        return;
-    }
     switch (k) {
-        .tab, .right => app.switchTab(1),
-        .back_tab, .left => app.switchTab(-1),
+        .tab, .right => return app.switchTab(1),
+        .back_tab, .left => return app.switchTab(-1),
+        .escape => if (app.detail != null) {
+            app.detail = null;
+            return;
+        },
         .char => |c| switch (c) {
-            '1' => app.setTab(.wsl),
-            '2' => app.setTab(.network),
-            '3' => app.setTab(.distros),
+            'q' => {
+                app.quit = true;
+                return;
+            },
+            'r' => return app.refresh(),
+            'l' => if (app.job != null or app.last != null) {
+                app.modal = .log;
+                return;
+            },
+            '1' => return app.setTab(.wsl),
+            '2' => return app.setTab(.network),
+            '3' => return app.setTab(.distros),
             else => {},
         },
         else => {},
     }
+    if (!app.info.loaded) {
+        return;
+    }
+    const items = app.pageItems();
+    if (Menu.key(items, app.cursor(), k)) |item| {
+        item.run(app, item.arg);
+    }
+}
+
+fn confirmKey(app: *App, m: anytype, k: Key) void {
+    if (k == .escape) {
+        return app.closeModal();
+    }
+    var go = false;
+    if (m.opts.typed.len != 0) {
+        switch (k) {
+            .backspace => m.input_len -|= 1,
+            .enter => go = std.mem.eql(u8, m.input[0..m.input_len], m.opts.typed),
+            .char => |c| if (c < 0x80 and m.input_len < m.input.len) {
+                m.input[m.input_len] = @intCast(c);
+                m.input_len += 1;
+            },
+            else => {},
+        }
+    } else {
+        const items = confirmItems(m.opts);
+        if (Menu.key(&items, &m.cursor, k)) |item| {
+            if (item.arg.len == 0) {
+                return app.closeModal();
+            }
+            go = true;
+        }
+    }
+    if (!go) {
+        return;
+    }
+    const yes = m.yes;
+    const arg = app.gpa.dupe(u8, m.opts.arg) catch return;
+    defer app.gpa.free(arg);
+    app.closeModal();
+    yes(app, arg);
+}
+
+fn noop(_: *App, _: []const u8) void {}
+
+/// 取消在前且默认选中 arg 非空表示确认
+fn confirmItems(o: Confirm) [2]Menu.Item {
+    return .{
+        .{ .label = "取消", .run = noop },
+        .{ .label = o.yes_label, .danger = o.danger, .run = noop, .arg = "yes" },
+    };
 }
 
 pub fn openDetail(app: *App, name: []const u8) void {
     const n = @min(name.len, app.detail_buf.len);
     @memcpy(app.detail_buf[0..n], name[0..n]);
     app.detail = app.detail_buf[0..n];
+    app.cursors[@backingInt(std.meta.Tag(Page).distro)] = 0;
     app.refresh();
 }
 
@@ -454,119 +479,173 @@ fn switchTab(app: *App, dir: isize) void {
     app.setTab(@fromBackingInt(@intCast(@mod(i + dir, n))));
 }
 
+fn cursor(app: *App) *usize {
+    return &app.cursors[@backingInt(std.meta.activeTag(app.page()))];
+}
+
+fn pageItems(app: *App) []const Menu.Item {
+    const a = app.frame_arena.allocator();
+    return switch (app.page()) {
+        .wsl => page_wsl.items(app, a),
+        .network => page_network.items(app, a),
+        .distros => page_distros.items(app, a),
+        .distro => |name| page_distro.items(app, a, name),
+    } catch &.{};
+}
+
 pub fn draw(app: *App) void {
     const s = &app.screen;
     s.clear();
-    var x = s.put(1, 0, "wslb", .title);
-    x += 2;
+    app.frame +%= 1;
+    _ = app.frame_arena.reset(.retain_capacity);
+    app.drawHeader();
+    const bottom = @as(usize, s.height) -| 1;
+    var hints: []const u8 = "";
+    switch (app.modal) {
+        .none => hints = app.drawPage(),
+        .form => |*m| {
+            const y = pane(s, 2, .title, m.form.title, "");
+            m.form.draw(s, y, bottom -| 1);
+            hints = "↑↓ 移动" ++ Screen.glyph.dot ++ "←→ 切换选项" ++ Screen.glyph.dot ++ "回车 下一项" ++ Screen.glyph.dot ++ "Esc 取消";
+        },
+        .confirm => |m| hints = drawConfirm(s, m),
+        .note => |m| {
+            const y = pane(s, 2, .title, m.title, "");
+            _ = putLines(s, y, m.text, .normal);
+            hints = "回车 关闭";
+        },
+        .log => hints = app.drawLog(),
+    }
+    if (app.message_len != 0 and app.modal == .none) {
+        _ = s.put(2, bottom -| 1, app.message[0..app.message_len], .warn);
+    }
+    _ = s.put(2, bottom, hints, .muted);
+}
+
+fn drawHeader(app: *App) void {
+    const s = &app.screen;
+    var x = s.put(2, 0, "wslb", .title) + 2;
     for (std.enums.values(Tab)) |t| {
         const label = switch (t) {
-            .wsl => " 1 WSL ",
-            .network => " 2 网络 ",
-            .distros => " 3 发行版 ",
+            .wsl => " WSL ",
+            .network => " 网络 ",
+            .distros => " 发行版 ",
         };
-        x = s.put(x, 0, label, if (t == app.tab and app.detail == null) Screen.Style.selected else .muted) + 1;
+        const current = t == app.tab;
+        x = s.put(x, 0, label, if (current and app.detail == null) Screen.Style.selected else if (current) .strong else .muted) + 1;
     }
     if (app.detail) |name| {
-        _ = s.print(x + 1, 0, .title, "› {s}", .{name});
+        _ = s.print(x, 0, .strong, "› {s}", .{name});
     }
     if (app.busy()) {
-        _ = s.print(@as(usize, s.width) -| 24, 0, .warn, "● {s}", .{app.job.?.title});
+        const job = app.job.?;
+        const w = Screen.textWidth(job.title) + 4;
+        const sx = @as(usize, s.width) -| w;
+        _ = s.put(sx, 0, Screen.glyph.spinner[app.frame % Screen.glyph.spinner.len], .title);
+        _ = s.put(sx + 2, 0, job.title, .muted);
     }
-    if (!app.info.loaded) {
-        _ = s.put(2, 2, "正在读取 WSL 状态", .muted);
-    } else {
-        switch (app.page()) {
-            .wsl => page_wsl.draw(app, s),
-            .network => page_network.draw(app, s),
-            .distros => page_distros.draw(app, s),
-            .distro => |name| page_distro.draw(app, s, name),
-        }
-    }
-    const bottom = @as(usize, s.height) -| 1;
-    if (app.message_len != 0) {
-        _ = s.put(1, bottom -| 1, app.message[0..app.message_len], .warn);
-    }
-    _ = s.put(1, bottom, "Tab 切页  r 刷新  L 任务日志  q 退出", .muted);
-    app.drawModal();
 }
 
-fn drawModal(app: *App) void {
+/// 返回底部提示
+fn drawPage(app: *App) []const u8 {
     const s = &app.screen;
-    switch (app.modal) {
-        .none => {},
-        .form => |*m| m.form.draw(s),
-        .confirm => |m| {
-            const h = textBox(s, m.title, m.text, if (m.typed.len != 0) 3 else 2);
-            if (m.typed.len != 0) {
-                _ = s.print(h.x + 2, h.bottom - 2, .warn, "输入 {s} 确认: {s}_", .{ m.typed, m.input[0..m.input_len] });
-                _ = s.put(h.x + 2, h.bottom - 1, "回车 确认  Esc 取消", .muted);
-            } else {
-                _ = s.put(h.x + 2, h.bottom - 1, "y 确认  n 取消", .key);
-            }
-        },
-        .note => |m| {
-            const h = textBox(s, m.title, m.text, 1);
-            _ = s.put(h.x + 2, h.bottom - 1, "回车 关闭", .muted);
-        },
-        .log => app.drawLog(),
+    if (!app.info.loaded) {
+        _ = s.put(2, 2, Screen.glyph.spinner[app.frame % Screen.glyph.spinner.len], .title);
+        _ = s.put(4, 2, "正在读取 WSL 状态", .muted);
+        return "q 退出";
     }
+    const y = switch (app.page()) {
+        .wsl => page_wsl.draw(app, s),
+        .network => page_network.draw(app, s),
+        .distros => page_distros.draw(app, s),
+        .distro => |name| page_distro.draw(app, s, name),
+    };
+    const items = app.pageItems();
+    const cur = app.cursor();
+    if (items.len != 0 and cur.* >= items.len) {
+        cur.* = items.len - 1;
+    }
+    _ = Menu.draw(s, 2, y + 1, items, cur.*);
+    const d = Screen.glyph.dot;
+    const base = "↑↓ 选择" ++ d ++ "回车 执行" ++ d ++ "Tab 切页" ++ d ++ "r 刷新";
+    const has_log = app.job != null or app.last != null;
+    if (app.detail != null) {
+        return if (has_log) base ++ d ++ "l 任务日志" ++ d ++ "Esc 返回" else base ++ d ++ "Esc 返回";
+    }
+    return if (has_log) base ++ d ++ "l 任务日志" ++ d ++ "q 退出" else base ++ d ++ "q 退出";
 }
 
-const BoxPos = struct { x: usize, bottom: usize };
+/// 一条横线加标题 Claude Code 的对话框样式 返回正文起始行
+fn pane(s: *Screen, y: usize, style: Screen.Style, title: []const u8, subtitle: []const u8) usize {
+    s.rule(y, .{ .fg = style.fg });
+    _ = s.put(2, y + 1, title, .{ .fg = style.fg, .bold = true });
+    if (subtitle.len != 0) {
+        _ = s.put(2, y + 2, subtitle, .muted);
+        return y + 4;
+    }
+    return y + 3;
+}
 
-fn textBox(s: *Screen, title: []const u8, text: []const u8, extra: usize) BoxPos {
-    var lines: usize = 0;
-    var width: usize = Screen.textWidth(title) + 6;
+fn putLines(s: *Screen, y0: usize, text: []const u8, style: Screen.Style) usize {
+    var y = y0;
     var it = std.mem.splitScalar(u8, text, '\n');
     while (it.next()) |line| {
-        lines += 1;
-        width = @max(width, Screen.textWidth(line) + 4);
+        _ = s.put(2, y, line, style);
+        y += 1;
     }
-    const w = @min(width, @as(usize, s.width) -| 4);
-    const h = @min(lines + 3 + extra, @as(usize, s.height) -| 2);
-    const x = (@as(usize, s.width) - w) / 2;
-    const y = (@as(usize, s.height) -| h) / 2;
-    s.box(x, y, w, h, title, .title);
-    var row = y + 1;
-    it = std.mem.splitScalar(u8, text, '\n');
-    while (it.next()) |line| {
-        if (row >= y + h - 1 - extra) {
-            break;
-        }
-        _ = s.putMax(x + 2, row, x + w - 2, line, .normal);
-        row += 1;
-    }
-    return .{ .x = x, .bottom = y + h - 1 };
+    return y;
 }
 
-fn drawLog(app: *App) void {
+fn drawConfirm(s: *Screen, m: anytype) []const u8 {
+    const o = m.opts;
+    var y = pane(s, 2, if (o.danger) .bad else .title, o.title, "");
+    y = putLines(s, y, o.text, .normal) + 1;
+    if (o.typed.len != 0) {
+        const x = s.print(2, y, .normal, "输入 {s} 确认 ", .{o.typed});
+        const end = s.put(x, y, m.input[0..m.input_len], .focus);
+        _ = s.put(end, y, " ", .selected);
+        return "输入名称后回车" ++ Screen.glyph.dot ++ "Esc 取消";
+    }
+    const items = confirmItems(o);
+    _ = Menu.draw(s, 2, y, &items, m.cursor);
+    return "↑↓ 选择" ++ Screen.glyph.dot ++ "回车 确认" ++ Screen.glyph.dot ++ "Esc 取消";
+}
+
+fn drawLog(app: *App) []const u8 {
     const s = &app.screen;
-    const job = app.job orelse app.last orelse return;
-    const w = @as(usize, s.width) -| 4;
-    const h = @as(usize, s.height) -| 4;
-    s.box(2, 2, w, h, job.title, .title);
-    const rows = h -| 3;
-    const Ctx = struct { s: *Screen, w: usize, top: usize, rows: usize, total: usize };
-    var ctx: Ctx = .{ .s = s, .w = w, .top = 3, .rows = rows, .total = 0 };
+    const job = app.job orelse app.last orelse return "";
+    const done = job.log.done.load(.acquire);
+    const style: Screen.Style = if (!done) .title else if (job.log.failed) .bad else .good;
+    const y0 = pane(s, 2, style, job.title, "");
+    if (!done) {
+        _ = s.put(2, y0 - 1, Screen.glyph.spinner[app.frame % Screen.glyph.spinner.len], .title);
+        _ = s.put(4, y0 - 1, "运行中", .muted);
+    } else {
+        _ = s.mark(2, y0 - 1, if (job.log.failed) .bad else .ok, if (job.log.failed) "失败" else "完成");
+    }
+    const rows = @as(usize, s.height) -| (y0 + 2);
+    const Ctx = struct { s: *Screen, top: usize, rows: usize };
+    var ctx: Ctx = .{ .s = s, .top = y0, .rows = rows };
     job.log.tail(rows + app.log_scroll, &ctx, struct {
         fn each(c: *Ctx, i: usize, line: []const u8) void {
             if (i >= c.rows) {
                 return;
             }
-            const style: Screen.Style = if (std.mem.startsWith(u8, line, "==>"))
-                .title
+            const st: Screen.Style = if (std.mem.startsWith(u8, line, "==>"))
+                .strong
             else if (std.mem.indexOf(u8, line, "✘") != null or std.mem.startsWith(u8, line, "失败"))
                 .bad
             else if (std.mem.indexOf(u8, line, "✔") != null)
                 .good
             else
                 .normal;
-            _ = c.s.putMax(4, c.top + i, 2 + c.w - 2, line, style);
+            _ = c.s.put(2, c.top + i, line, st);
         }
     }.each);
-    const status: []const u8 = if (!job.log.done.load(.acquire)) "运行中  Esc 转到后台  ↑↓ 滚动" else if (job.log.failed) "失败  回车 关闭" else "完成  回车 关闭";
-    _ = s.put(4, 2 + h - 1, status, if (job.log.failed) Screen.Style.bad else .muted);
+    if (!done) {
+        return "↑↓ 滚动" ++ Screen.glyph.dot ++ "Esc 转到后台";
+    }
+    return "↑↓ 滚动" ++ Screen.glyph.dot ++ "回车 关闭";
 }
 
 pub fn logVersion(app: *const App) u32 {

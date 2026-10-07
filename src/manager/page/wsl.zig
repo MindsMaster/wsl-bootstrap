@@ -2,8 +2,8 @@ const std = @import("std");
 const App = @import("../App.zig");
 const Env = @import("../job/Env.zig");
 const Form = @import("../ui/Form.zig");
-const Key = @import("../term/keys.zig").Key;
 const Log = @import("../Log.zig");
+const Menu = @import("../ui/Menu.zig");
 const Screen = @import("../term/Screen.zig");
 const ini = @import("ini");
 const winsys = @import("../winsys.zig");
@@ -18,13 +18,16 @@ const recommended = [_][3][]const u8{
     .{ "wsl2", "ipv6", "false" },
 };
 
-pub fn draw(app: *App, s: *Screen) void {
+const dot = Screen.glyph.dot;
+
+pub fn draw(app: *App, s: *Screen) usize {
     const info = app.info;
     var y: usize = 2;
     if (info.version) |v| {
-        _ = s.print(2, y, .normal, "WSL {s}   内核 {s}", .{ v.wsl, v.kernel });
+        const x = s.print(2, y, .strong, "WSL {s}", .{v.wsl});
+        _ = s.print(x + 2, y, .muted, "内核 {s}", .{v.kernel});
     } else {
-        _ = s.put(2, y, "没有检测到 WSL  按 i 启用 需要管理员权限 完成后重启电脑", .bad);
+        _ = s.mark(2, y, .bad, "没有检测到 WSL");
     }
     y += 1;
     var default: []const u8 = "无";
@@ -37,44 +40,56 @@ pub fn draw(app: *App, s: *Screen) void {
             running += 1;
         }
     }
-    _ = s.print(2, y, .muted, "默认发行版 {s}   共 {d} 个 运行中 {d} 个", .{ default, info.distros.len, running });
+    _ = s.print(2, y, .muted, "默认 {s}" ++ dot ++ "{d} 个发行版" ++ dot ++ "{d} 个运行中", .{ default, info.distros.len, running });
     y += 2;
 
-    _ = s.put(2, y, ".wslconfig", .title);
-    _ = s.put(14, y, if (info.wslconfig_path.len != 0) info.wslconfig_path else "找不到 USERPROFILE", .muted);
+    const x = s.put(2, y, ".wslconfig", .strong);
+    _ = s.put(x + 2, y, if (info.wslconfig_path.len != 0) info.wslconfig_path else "找不到 USERPROFILE", .muted);
     y += 1;
     const cur = wslconfig.current(info.wslconfig);
-    _ = s.print(4, y, .normal, "内存 {s}   处理器 {s}   swap {s}", .{ orDash(cur.memory), orDash(cur.processors), orDash(cur.swap) });
+    _ = s.print(2, y, .normal, "内存 {s}" ++ dot ++ "处理器 {s}" ++ dot ++ "swap {s}", .{ orDash(cur.memory), orDash(cur.processors), orDash(cur.swap) });
     y += 1;
     for (recommended) |r| {
         const have = ini.get(info.wslconfig, r[0], r[1]);
         const good = have != null and std.ascii.eqlIgnoreCase(have.?, r[2]);
-        _ = s.print(4, y, if (good) Screen.Style.good else .warn, "{s} {s}={s}  当前 {s}", .{ if (good) "✔" else "!", r[1], r[2], have orelse "未设置" });
+        var buf: [128]u8 = undefined;
+        const text = if (good)
+            std.fmt.bufPrint(&buf, "{s} = {s}", .{ r[1], r[2] }) catch ""
+        else
+            std.fmt.bufPrint(&buf, "{s} 建议 {s} 当前 {s}", .{ r[1], r[2], have orelse "未设置" }) catch "";
+        _ = s.mark(2, y, if (good) .ok else .warn, text);
         y += 1;
     }
-    y += 1;
-    _ = s.put(2, y, "操作", .title);
-    y += 1;
-    _ = s.put(4, y, "u 更新到预发行版   c 编辑 .wslconfig   s 关闭全部 WSL   i 启用 WSL", .key);
+    return y;
+}
+
+pub fn items(app: *App, a: std.mem.Allocator) ![]const Menu.Item {
+    if (app.info.version == null) {
+        return a.dupe(Menu.Item, &.{
+            .{ .label = "启用 WSL", .desc = "wsl --install --no-distribution 需要管理员确认 完成后重启电脑", .run = askEnable },
+        });
+    }
+    return a.dupe(Menu.Item, &.{
+        .{ .label = "编辑 .wslconfig", .desc = "内存 处理器 swap 同时写入 virtiofs 与防泄露推荐项", .run = openConfigForm },
+        .{ .label = "更新到预发行版", .desc = "wsl --update --pre-release 需要管理员确认", .run = askUpdate },
+        .{ .label = "关闭全部 WSL", .desc = "wsl --shutdown 所有发行版一起停止", .danger = true, .run = askShutdown },
+    });
 }
 
 fn orDash(v: []const u8) []const u8 {
     return if (v.len != 0) v else "-";
 }
 
-pub fn key(app: *App, k: Key) bool {
-    const c = switch (k) {
-        .char => |c| c,
-        else => return false,
-    };
-    switch (c) {
-        'u' => app.confirm("更新 WSL", shutdownWarning(app, "wsl --update --pre-release 会弹出 UAC\n更新过程中 WSL 虚拟机会重启"), "", update),
-        'c' => openConfigForm(app),
-        's' => app.confirm("关闭全部 WSL", shutdownWarning(app, "wsl --shutdown 会停掉整个 WSL 虚拟机"), "", shutdown),
-        'i' => app.confirm("启用 WSL", "wsl --install --no-distribution 会弹出 UAC\n完成后需要重启电脑", "", enableWsl),
-        else => return false,
-    }
-    return true;
+fn askEnable(app: *App, _: []const u8) void {
+    app.confirm(.{ .title = "启用 WSL", .text = "wsl --install --no-distribution 会弹出管理员确认\n完成后需要重启电脑", .yes_label = "启用" }, enableWsl);
+}
+
+fn askUpdate(app: *App, _: []const u8) void {
+    app.confirm(.{ .title = "更新 WSL", .text = shutdownWarning(app, "wsl --update --pre-release 会弹出管理员确认\n更新过程中 WSL 虚拟机会重启"), .yes_label = "更新", .danger = true }, update);
+}
+
+fn askShutdown(app: *App, _: []const u8) void {
+    app.confirm(.{ .title = "关闭全部 WSL", .text = shutdownWarning(app, "wsl --shutdown 会停掉整个 WSL 虚拟机"), .yes_label = "关闭全部", .danger = true }, shutdown);
 }
 
 /// 列出会被一起停掉的发行版 网络防护也在其中
@@ -134,7 +149,7 @@ fn shutdown(app: *App, _: []const u8) void {
     }.run, .{});
 }
 
-fn openConfigForm(app: *App) void {
+fn openConfigForm(app: *App, _: []const u8) void {
     const cur = wslconfig.current(app.info.wslconfig);
     var mem_buf: [32]u8 = undefined;
     const mem_default = std.fmt.bufPrint(&mem_buf, "{d}GB", .{@max(2, winsys.memoryGb() / 2)}) catch "8GB";
@@ -149,7 +164,8 @@ fn openConfigForm(app: *App) void {
     fields[0].setText(if (cur.memory.len != 0) cur.memory else mem_default);
     fields[1].setText(if (cur.processors.len != 0) cur.processors else cpu_default);
     fields[2].setText(if (cur.swap.len != 0) cur.swap else "8GB");
-    app.openForm("编辑 .wslconfig  同时写入 virtiofs 与防泄露推荐项", &fields, submitConfig);
+    app.openForm("编辑 .wslconfig", &fields, submitConfig);
+    app.modal.form.form.submit_label = "写入 原文件先备份";
 }
 
 fn submitConfig(app: *App, f: *Form) void {

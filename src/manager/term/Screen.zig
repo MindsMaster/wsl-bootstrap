@@ -3,27 +3,64 @@ const std = @import("std");
 const Screen = @This();
 const Allocator = std.mem.Allocator;
 
-pub const Color = enum(u8) { default, red, green, yellow, blue, magenta, cyan, gray };
+/// 取自 Claude Code 深色主题
+pub const Color = enum(u8) {
+    default,
+    accent,
+    focus,
+    success,
+    err,
+    warning,
+    inactive,
+    subtle,
+
+    fn rgb(c: Color) [3]u8 {
+        return switch (c) {
+            .default => unreachable,
+            .accent => .{ 215, 119, 87 },
+            .focus => .{ 177, 185, 249 },
+            .success => .{ 78, 186, 101 },
+            .err => .{ 255, 107, 128 },
+            .warning => .{ 255, 193, 7 },
+            .inactive => .{ 153, 153, 153 },
+            .subtle => .{ 80, 80, 80 },
+        };
+    }
+};
 
 pub const Style = struct {
     fg: Color = .default,
     bold: bool = false,
-    dim: bool = false,
     reverse: bool = false,
 
     pub const normal: Style = .{};
-    pub const title: Style = .{ .fg = .cyan, .bold = true };
-    pub const selected: Style = .{ .reverse = true };
-    pub const muted: Style = .{ .fg = .gray };
-    pub const good: Style = .{ .fg = .green };
-    pub const bad: Style = .{ .fg = .red, .bold = true };
-    pub const warn: Style = .{ .fg = .yellow };
-    pub const key: Style = .{ .fg = .cyan };
+    pub const title: Style = .{ .fg = .accent, .bold = true };
+    pub const strong: Style = .{ .bold = true };
+    pub const focus: Style = .{ .fg = .focus };
+    pub const selected: Style = .{ .reverse = true, .bold = true };
+    pub const muted: Style = .{ .fg = .inactive };
+    pub const subtle: Style = .{ .fg = .subtle };
+    pub const good: Style = .{ .fg = .success };
+    pub const bad: Style = .{ .fg = .err };
+    pub const warn: Style = .{ .fg = .warning };
 
     fn eql(a: Style, b: Style) bool {
-        return a.fg == b.fg and a.bold == b.bold and a.dim == b.dim and a.reverse == b.reverse;
+        return a.fg == b.fg and a.bold == b.bold and a.reverse == b.reverse;
     }
 };
+
+/// 只用单宽字符 ✔ 在 Windows Terminal 里可能按 emoji 画成两格
+pub const glyph = struct {
+    pub const pointer = "❯";
+    pub const tick = "✓";
+    pub const cross = "✗";
+    pub const warn = "!";
+    pub const dot = " · ";
+    pub const rule = "─";
+    pub const spinner = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
+};
+
+pub const Mark = enum { ok, bad, warn, none };
 
 const Cell = struct {
     cp: u21 = ' ',
@@ -115,7 +152,13 @@ pub fn putMax(s: *Screen, x0: usize, y: usize, max_x: usize, text: []const u8, s
     var it = std.unicode.Utf8View.init(text) catch return x0;
     var cps = it.iterator();
     while (cps.nextCodepoint()) |raw| {
-        const cp: u21 = if (raw < 0x20) ' ' else raw;
+        // agent 日志里的 ✔ ✘ 换成单宽的 ✓ ✗
+        const cp: u21 = switch (raw) {
+            0...0x1f => ' ',
+            0x2714 => 0x2713,
+            0x2718 => 0x2717,
+            else => raw,
+        };
         const w = charWidth(cp);
         if (x + w > limit) {
             break;
@@ -139,38 +182,23 @@ pub fn print(s: *Screen, x: usize, y: usize, style: Style, comptime fmt: []const
     return s.put(x, y, text, style);
 }
 
-pub fn fill(s: *Screen, x: usize, y: usize, w: usize, h: usize, style: Style) void {
-    var row = y;
-    while (row < @min(y + h, s.height)) : (row += 1) {
-        var col = x;
-        while (col < @min(x + w, s.width)) : (col += 1) {
-            s.at(col, row).* = .{ .style = style };
-        }
+pub fn rule(s: *Screen, y: usize, style: Style) void {
+    var x: usize = 0;
+    while (x < s.width) : (x += 1) {
+        _ = s.put(x, y, glyph.rule, style);
     }
 }
 
-pub fn box(s: *Screen, x: usize, y: usize, w: usize, h: usize, title: []const u8, style: Style) void {
-    if (w < 2 or h < 2) {
-        return;
-    }
-    s.fill(x, y, w, h, .normal);
-    var col = x + 1;
-    while (col < x + w - 1) : (col += 1) {
-        _ = s.put(col, y, "─", style);
-        _ = s.put(col, y + h - 1, "─", style);
-    }
-    var row = y + 1;
-    while (row < y + h - 1) : (row += 1) {
-        _ = s.put(x, row, "│", style);
-        _ = s.put(x + w - 1, row, "│", style);
-    }
-    _ = s.put(x, y, "┌", style);
-    _ = s.put(x + w - 1, y, "┐", style);
-    _ = s.put(x, y + h - 1, "└", style);
-    _ = s.put(x + w - 1, y + h - 1, "┘", style);
-    if (title.len != 0) {
-        _ = s.putMax(x + 2, y, x + w - 2, title, Style.title);
-    }
+/// 状态行 前面带 ✓ ✗ ! 图标 返回结束列
+pub fn mark(s: *Screen, x: usize, y: usize, m: Mark, text: []const u8) usize {
+    const icon: []const u8, const style: Style = switch (m) {
+        .ok => .{ glyph.tick, .good },
+        .bad => .{ glyph.cross, .bad },
+        .warn => .{ glyph.warn, .warn },
+        .none => .{ " ", .muted },
+    };
+    _ = s.put(x, y, icon, style);
+    return s.put(x + 2, y, text, if (m == .none) Style.muted else .normal);
 }
 
 fn sgr(w: *std.Io.Writer, st: Style) !void {
@@ -178,24 +206,12 @@ fn sgr(w: *std.Io.Writer, st: Style) !void {
     if (st.bold) {
         try w.writeAll(";1");
     }
-    if (st.dim) {
-        try w.writeAll(";2");
-    }
     if (st.reverse) {
         try w.writeAll(";7");
     }
-    const code: u8 = switch (st.fg) {
-        .default => 0,
-        .red => 31,
-        .green => 32,
-        .yellow => 33,
-        .blue => 34,
-        .magenta => 35,
-        .cyan => 36,
-        .gray => 90,
-    };
-    if (code != 0) {
-        try w.print(";{d}", .{code});
+    if (st.fg != .default) {
+        const c = st.fg.rgb();
+        try w.print(";38;2;{d};{d};{d}", .{ c[0], c[1], c[2] });
     }
     try w.writeAll("m");
 }
