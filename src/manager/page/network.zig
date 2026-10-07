@@ -1,4 +1,5 @@
 const std = @import("std");
+const build_options = @import("build_options");
 const App = @import("../App.zig");
 const Env = @import("../job/Env.zig");
 const Form = @import("../ui/Form.zig");
@@ -7,7 +8,6 @@ const Menu = @import("../ui/Menu.zig");
 const Screen = @import("../term/Screen.zig");
 const Wsl = @import("../Wsl.zig");
 const netdistro = @import("../job/netdistro.zig");
-const node = @import("../job/node.zig");
 const winsys = @import("../winsys.zig");
 
 const dot = Screen.glyph.dot;
@@ -71,21 +71,44 @@ pub fn draw(app: *App, s: *Screen) usize {
 
 pub fn items(app: *App, a: std.mem.Allocator) ![]const Menu.Item {
     var list: std.ArrayList(Menu.Item) = .empty;
-    if (Wsl.find(app.info.distros, Wsl.net_distro) == null) {
-        try list.append(a, .{ .label = "安装网络发行版", .desc = "导入 wslb-net 约 100MB 之后在这里设置节点", .run = openInstallForm });
+    const installed = Wsl.find(app.info.distros, Wsl.net_distro) orelse {
+        try list.append(a, .{ .label = "安装网络发行版", .desc = "导入 wslb-net 约 100MB 并打开开机自动连接", .run = openInstallForm });
         return list.items;
+    };
+    const foreign = if (app.info.net) |st| st.foreign_killswitch.len != 0 else false;
+    var active: []const u8 = if (app.info.net) |st| st.node_name else "";
+    if (active.len == 0) {
+        active = "未设置";
     }
+    for (app.info.nodes) |n| {
+        if (n.active) {
+            active = n.name;
+        }
+    }
+    const auto_text, const auto_style = Menu.onOff(app.info.autostart);
     try list.appendSlice(a, &.{
-        .{ .label = "设置节点", .desc = "粘贴 vless:// 链接 域名在 Windows 侧解析", .run = openNode },
+        .{ .label = "节点", .note = active, .note_style = if (app.info.net == null or app.info.net.?.node.len == 0) .warn else .muted, .desc = "添加 切换 删除 vless 节点", .run = openNodes },
         .{ .label = "网络规则", .desc = "直连网段 排除网卡 隧道内 DNS 健康探测", .run = openRules },
-        .{ .label = "出口检查", .desc = "经隧道查询出口 IP 与地区", .run = runCheck },
-        .{ .label = "泄露测试", .desc = "暂停 sing-box 确认直连被拒", .run = runLeaktest },
-        .{ .label = "开机自动连接", .note = if (app.info.autostart) "开" else "关", .desc = "登录 Windows 时在后台拉起网络发行版", .run = toggleAutostart },
-        .{ .label = "后台保持运行", .desc = "现在拉起网络发行版并保持运行", .run = runHold },
-        .{ .label = "更新 agent", .desc = "把 wslb.exe 自带的 agent 装进 wslb-net", .run = runUpgrade },
+        .{ .label = "出口检查", .desc = "查询现在的出口 IP 与地区", .run = runCheck },
     });
+    if (!foreign) {
+        try list.append(a, .{ .label = "泄露测试", .desc = "暂停 sing-box 确认直连被拒", .run = runLeaktest });
+    }
+    try list.append(a, .{ .label = "开机自动连接", .note = auto_text, .note_style = auto_style, .desc = "登录 Windows 时在后台启动网络发行版", .run = toggleAutostart });
+    if (installed.state != .running) {
+        try list.append(a, .{ .label = "启动网络发行版", .desc = "现在在后台启动并保持运行", .run = runHold });
+    }
     const st = app.info.net orelse return list.items;
-    if (st.foreign_killswitch.len != 0) {
+    if (!std.mem.eql(u8, st.version, build_options.version)) {
+        try list.append(a, .{
+            .label = "更新网络发行版的 agent",
+            .note = try std.fmt.allocPrint(a, "{s} → {s}", .{ if (st.version.len != 0) st.version else "旧版", build_options.version }),
+            .note_style = .warn,
+            .desc = "换成 wslb.exe 自带的版本 防火墙与黑洞保留",
+            .run = runUpgrade,
+        });
+    }
+    if (foreign) {
         return list.items;
     }
     if (st.guard) {
@@ -96,8 +119,8 @@ pub fn items(app: *App, a: std.mem.Allocator) ![]const Menu.Item {
     return list.items;
 }
 
-fn openNode(app: *App, _: []const u8) void {
-    app.openForm("设置节点", &.{.{ .id = "link", .label = "vless 链接", .kind = .password, .hint = "节点域名在 Windows 侧解析 IP 会被固定" }}, submitNode);
+fn openNodes(app: *App, _: []const u8) void {
+    app.openNodes();
 }
 
 fn runCheck(app: *App, _: []const u8) void {
@@ -173,18 +196,6 @@ fn submitInstall(app: *App, f: *Form) void {
     const location = job.arena.allocator().dupe(u8, f.get("location").text()) catch return;
     app.closeModal();
     app.runJob(job, netdistro.install, .{location});
-}
-
-fn submitNode(app: *App, f: *Form) void {
-    const link = f.get("link").text();
-    if (!std.mem.startsWith(u8, link, "vless://")) {
-        f.error_text = "只支持 vless:// 链接";
-        return;
-    }
-    const job = app.newJob("设置节点") orelse return;
-    const copy = job.arena.allocator().dupe(u8, link) catch return;
-    app.closeModal();
-    app.runJob(job, node.set, .{copy});
 }
 
 const NetConfig = struct {

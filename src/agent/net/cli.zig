@@ -1,4 +1,5 @@
 const std = @import("std");
+const build_options = @import("build_options");
 const Cli = @import("../Cli.zig");
 const Config = @import("Config.zig");
 const Control = @import("Control.zig");
@@ -11,6 +12,7 @@ const fsx = @import("../fsx.zig");
 const hold = @import("hold.zig");
 const ip4 = @import("ip4.zig");
 const lan = @import("lan.zig");
+const library = @import("library.zig");
 const netlink = @import("netlink.zig");
 const probe = @import("probe.zig");
 const singbox = @import("singbox.zig");
@@ -23,10 +25,12 @@ pub const commands = [_]Cli.Command{
     .{ .name = "lan", .args = "[--json|--tsv]", .summary = "可作上行的真实网卡", .group = .view, .run = lanList },
     .{ .name = "singbox-config", .summary = "打印将使用的 sing-box 配置", .group = .view, .run = singboxConfig },
     .{ .name = "set-node", .args = "[链接] [--ip IPv4] [--dry-run]", .summary = "设置 vless:// 节点 不给链接则从标准输入读", .group = .network, .run = setNode },
+    .{ .name = "node", .args = "list | add [链接] [--ip IPv4] [--use] | use <id> [--ip IPv4] | remove <id>", .summary = "保存多个节点 随时切换", .group = .network, .run = nodeCmd },
     .{ .name = "config", .args = "show | set <键> <值> | add|remove <列表> <值>", .summary = "上行 DNS 直连网段 排除网卡 健康检查", .group = .network, .run = config },
     .{ .name = "leaktest", .summary = "暂停 sing-box 验证真实网络被阻断 再恢复", .group = .network, .run = leaktest },
     .{ .name = "disable", .args = "--yes", .summary = "停守护进程 移除防火墙与黑洞 网络将直连", .group = .network, .run = disable },
     .{ .name = "enable", .summary = "撤销 disable 拉起守护进程", .group = .network, .run = enable },
+    .{ .name = "restart", .summary = "重启守护进程 防火墙与黑洞保留 换 agent 后用", .group = .network, .run = restart },
     .{ .name = "guard", .summary = "前台运行守护进程", .group = .internal, .run = guard },
     .{ .name = "start", .summary = "守护进程不在时脱离会话拉起 网络发行版开机命令", .group = .internal, .run = start },
     .{ .name = "hold", .summary = "保持网络发行版运行并守着守护进程", .group = .internal, .run = holdCmd },
@@ -111,6 +115,7 @@ fn status(c: *Cli, _: []const [:0]const u8) !Exit {
 
     if (c.json) {
         try c.writeJson(.{
+            .version = build_options.version,
             .protected = protected,
             .foreign_killswitch = foreign_ks orelse "",
             .guard = state != null,
@@ -259,11 +264,8 @@ fn singboxConfig(c: *Cli, _: []const [:0]const u8) !Exit {
     return .ok;
 }
 
-fn setNode(c: *Cli, args: []const [:0]const u8) !Exit {
-    const dry = Cli.hasFlag(args, "--dry-run");
-    if (!dry and !c.requireRoot()) {
-        return .failed;
-    }
+/// 链接取参数里的 vless:// 没有就读标准输入 IP 取 --ip 否则在本机解析
+fn nodeFromArgs(c: *Cli, args: []const [:0]const u8, allow_unresolved: bool) !Node {
     var link: []const u8 = "";
     for (args) |a| {
         if (std.mem.startsWith(u8, a, "vless://")) {
@@ -275,13 +277,36 @@ fn setNode(c: *Cli, args: []const [:0]const u8) !Exit {
         try c.err.flush();
         link = try c.readStdinLine();
     }
-    var node = Node.parseLink(c.arena, link) catch |err| return c.fail("{s}", .{Node.errorText(err)});
+    var node = Node.parseLink(c.arena, link) catch |err| {
+        try c.err.print("{s}\n", .{Node.errorText(err)});
+        return error.BadLink;
+    };
     if (Cli.flagValue(args, "--ip")) |ip| {
-        _ = ip4.Addr.parse(ip) catch return c.fail("--ip 不是有效 IPv4: {s}", .{ip});
+        _ = ip4.Addr.parse(ip) catch {
+            try c.err.print("--ip 不是有效 IPv4: {s}\n", .{ip});
+            return error.BadIp;
+        };
         node.ip = ip;
     } else if (!node.hostIsIp()) {
-        node.ip = resolve(c, node.host) catch if (dry) "" else return c.fail("无法解析 {s} 请用 --ip 指定", .{node.host});
+        node.ip = resolve(c, node.host) catch blk: {
+            if (allow_unresolved) {
+                break :blk "";
+            }
+            try c.err.print("无法解析 {s} 请用 --ip 指定\n", .{node.host});
+            return error.Unresolved;
+        };
+    } else {
+        node.ip = node.host;
     }
+    return node;
+}
+
+fn setNode(c: *Cli, args: []const [:0]const u8) !Exit {
+    const dry = Cli.hasFlag(args, "--dry-run");
+    if (!dry and !c.requireRoot()) {
+        return .failed;
+    }
+    const node = nodeFromArgs(c, args, dry) catch return .failed;
     if (dry) {
         if (c.json) {
             try c.writeJson(.{
@@ -304,10 +329,101 @@ fn setNode(c: *Cli, args: []const [:0]const u8) !Exit {
         });
         return .ok;
     }
+    _ = try library.save(c.io, c.gpa, c.etc("nodes"), node);
+    return activate(c, node);
+}
+
+fn activate(c: *Cli, node: Node) !Exit {
     try fsx.ensureDir(c.io, c.paths.etc);
     try node.save(c.io, c.gpa, c.etc("node.json"));
-    try c.ok("节点 {s} → {s}:{d}  {s}/{s}", .{ if (node.name.len != 0) node.name else node.host, node.ip, node.port, @tagName(node.security), @tagName(node.transport) });
+    try c.ok("节点 {s} → {s}:{d}  {s}/{s}", .{ library.label(node), node.ip, node.port, @tagName(node.security), @tagName(node.transport) });
     try notifyGuard(c);
+    return .ok;
+}
+
+fn nodeCmd(c: *Cli, args: []const [:0]const u8) !Exit {
+    const sub = if (args.len > 0) args[0] else "";
+    const rest = if (args.len > 0) args[1..] else args;
+    const dir = c.etc("nodes");
+    if (std.mem.eql(u8, sub, "list")) {
+        return nodeList(c, dir);
+    }
+    if (!c.requireRoot()) {
+        return .failed;
+    }
+    if (std.mem.eql(u8, sub, "add")) {
+        const node = nodeFromArgs(c, rest, false) catch return .failed;
+        const node_id = try library.save(c.io, c.gpa, dir, node);
+        try c.ok("已保存 {s} id {s}", .{ library.label(node), &node_id });
+        if (Cli.hasFlag(rest, "--use")) {
+            return activate(c, node);
+        }
+        return .ok;
+    }
+    if (rest.len == 0) {
+        return c.usage("node list | add [链接] [--ip IPv4] [--use] | use <id> [--ip IPv4] | remove <id>");
+    }
+    const node_id = rest[0];
+    if (std.mem.eql(u8, sub, "use")) {
+        var node = library.load(c.io, c.arena, dir, node_id) catch return c.fail("没有这个节点 {s}", .{node_id});
+        if (Cli.flagValue(rest, "--ip")) |ip| {
+            _ = ip4.Addr.parse(ip) catch return c.fail("--ip 不是有效 IPv4: {s}", .{ip});
+            node.ip = ip;
+            _ = try library.save(c.io, c.gpa, dir, node);
+        }
+        return activate(c, node);
+    }
+    if (std.mem.eql(u8, sub, "remove")) {
+        if (loadNode(c)) |active| {
+            if (std.mem.eql(u8, &library.id(active), node_id)) {
+                return c.fail("这是正在使用的节点 先切换到别的节点", .{});
+            }
+        }
+        library.remove(c.io, c.gpa, dir, node_id) catch return c.fail("没有这个节点 {s}", .{node_id});
+        try c.ok("已删除 {s}", .{node_id});
+        return .ok;
+    }
+    return c.usage("node list | add [链接] [--ip IPv4] [--use] | use <id> [--ip IPv4] | remove <id>");
+}
+
+/// 只用 set-node 设过的节点也补进列表
+fn nodeList(c: *Cli, dir: []const u8) !Exit {
+    const active = loadNode(c);
+    const active_id: ?[8]u8 = if (active) |n| library.id(n) else null;
+    var entries = try library.list(c.io, c.arena, dir);
+    if (active) |n| {
+        var found = false;
+        for (entries) |e| {
+            found = found or std.mem.eql(u8, &e.id, &active_id.?);
+        }
+        if (!found and std.os.linux.geteuid() == 0) {
+            _ = try library.save(c.io, c.gpa, dir, n);
+            entries = try library.list(c.io, c.arena, dir);
+        }
+    }
+    if (c.json) {
+        var s: std.json.Stringify = .{ .writer = c.out, .options = .{ .whitespace = .indent_2 } };
+        try s.beginArray();
+        for (entries) |e| {
+            try s.write(.{
+                .id = &e.id,
+                .name = library.label(e.node),
+                .host = e.node.host,
+                .ip = e.node.ip,
+                .port = e.node.port,
+                .security = @tagName(e.node.security),
+                .transport = @tagName(e.node.transport),
+                .active = active_id != null and std.mem.eql(u8, &e.id, &active_id.?),
+            });
+        }
+        try s.endArray();
+        try c.out.writeAll("\n");
+        return .ok;
+    }
+    for (entries) |e| {
+        const on = active_id != null and std.mem.eql(u8, &e.id, &active_id.?);
+        try c.out.print("{s} {s}  {s}  {s}:{d}\n", .{ if (on) "*" else " ", &e.id, library.label(e.node), e.node.host, e.node.port });
+    }
     return .ok;
 }
 
@@ -459,6 +575,13 @@ fn leaktest(c: *Cli, _: []const [:0]const u8) !Exit {
         try c.out.writeAll("已暂停 sing-box 直连公网\n");
         try c.io.sleep(.fromSeconds(2), .awake);
     } else {
+        const cfg = try loadConfig(c);
+        var sock = try netlink.Socket.open(0);
+        defer sock.close();
+        if (try Guard.foreignPresent(c.gpa, &sock, cfg)) |name| {
+            try c.warn("网络由另一套 kill-switch {s} 管理 探测会经它的隧道连通 这里的结果没有意义", .{name});
+            return .ok;
+        }
         try c.out.writeAll("守护进程未运行 直接探测\n");
     }
     try c.out.flush();
@@ -509,6 +632,29 @@ fn enable(c: *Cli, _: []const [:0]const u8) !Exit {
         try c.ok("已拉起守护进程", .{});
     } else {
         try c.ok("守护进程已在运行", .{});
+    }
+    return .ok;
+}
+
+/// 旧进程退出时防火墙与黑洞都留着 新进程接手前不会放行
+fn restart(c: *Cli, _: []const [:0]const u8) !Exit {
+    if (!c.requireRoot()) {
+        return .failed;
+    }
+    var buf: [128]u8 = undefined;
+    if (Control.request("shutdown", &buf)) |_| {
+        var waited: usize = 0;
+        while (Control.alive() and waited < 100) : (waited += 1) {
+            try c.io.sleep(.fromMilliseconds(100), .awake);
+        }
+        if (Control.alive()) {
+            return c.fail("守护进程 10 秒内没有退出", .{});
+        }
+    } else |_| {}
+    if (try hold.ensureGuard(c.io, c.paths, c.envp)) {
+        try c.ok("已用新的 agent 拉起守护进程", .{});
+    } else {
+        try c.warn("没有拉起守护进程 已停用或由另一套 kill-switch 管理", .{});
     }
     return .ok;
 }

@@ -2,6 +2,7 @@ const std = @import("std");
 const Env = @import("Env.zig");
 const Log = @import("../Log.zig");
 const Wsl = @import("../Wsl.zig");
+const winsys = @import("../winsys.zig");
 
 /// 导入编进管理器的 rootfs 再在后台连住它
 pub fn install(env: Env, log: *Log, location: []const u8) !void {
@@ -24,7 +25,10 @@ pub fn install(env: Env, log: *Log, location: []const u8) !void {
         return error.ImportFailed;
     }
     try start(env, log);
-    log.add("==> 完成 下一步在网络页设置节点");
+    winsys.setAutostart(env.wsl.runner, env.arena, env.system_root, true) catch |err| {
+        log.print("开机自动连接没有打开 {s} 可在网络页手动打开", .{@errorName(err)});
+    };
+    log.add("==> 完成 已打开开机自动连接 下一步在网络页添加节点");
 }
 
 /// 后台常驻一个 wsl.exe 客户端 发行版就不会被 WSL 停掉
@@ -38,6 +42,7 @@ pub fn start(env: Env, log: *Log) !void {
 pub fn upgradeAgent(env: Env, log: *Log) !void {
     log.add("==> 更新网络发行版里的 wslb-agent");
     try env.wsl.push(log, Wsl.net_distro, Wsl.agent_path, env.agent, "0755");
-    _ = try env.wsl.exec(log, Wsl.net_distro, &.{ Wsl.agent_path, "disable", "--yes" }, null);
-    _ = try env.wsl.exec(log, Wsl.net_distro, &.{ Wsl.agent_path, "enable" }, null);
+    if (try env.wsl.exec(log, Wsl.net_distro, &.{ Wsl.agent_path, "restart" }, null) != 0) {
+        return error.RestartFailed;
+    }
 }

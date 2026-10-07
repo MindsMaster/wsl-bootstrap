@@ -7,12 +7,18 @@ pub const Item = struct {
     label: []const u8,
     /// 标签右侧的灰色附注 多项之间按最长标签对齐
     note: []const u8 = "",
+    note_style: Screen.Style = .muted,
     /// 聚焦时显示在底部说明栏
     desc: []const u8 = "",
     danger: bool = false,
     run: *const fn (*App, []const u8) void,
     arg: []const u8 = "",
 };
+
+/// 开关类菜单项的附注 开绿关红
+pub fn onOff(on: bool) struct { []const u8, Screen.Style } {
+    return if (on) .{ "开", .good } else .{ "关", .bad };
+}
 
 pub fn key(items: []const Item, cursor: *usize, k: Key) ?Item {
     if (items.len == 0) {
@@ -47,7 +53,7 @@ pub fn draw(s: *Screen, x: usize, y0: usize, items: []const Item, cursor: usize)
         }
         _ = s.put(x + 2, y, it.label, if (focused) Screen.Style{ .fg = style.fg, .bold = true } else style);
         if (it.note.len != 0) {
-            _ = s.put(x + 4 + label_w, y, it.note, .muted);
+            _ = s.put(x + 4 + label_w, y, it.note, it.note_style);
         }
         y += 1;
     }

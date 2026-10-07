@@ -10,7 +10,8 @@ pub const Field = struct {
     id: []const u8,
     label: []const u8,
     kind: Kind = .text,
-    buf: [256]u8 = undefined,
+    /// vless 链接带编码后的中文名 会超过 1KB
+    buf: [2048]u8 = undefined,
     len: usize = 0,
     choices: []const []const u8 = &.{},
     choice: usize = 0,
@@ -76,18 +77,22 @@ pub const Field = struct {
         const style: Screen.Style = if (focused) .focus else .normal;
         switch (f.kind) {
             .text, .password => {
-                var stars: [256]u8 = undefined;
-                const shown = if (f.kind == .password) blk: {
-                    @memset(stars[0..f.len], '*');
-                    break :blk stars[0..f.len];
-                } else f.text();
-                const end = s.put(x, y, shown, .normal);
+                var end = x;
+                if (f.kind == .text) {
+                    end = s.put(x, y, f.text(), .normal);
+                } else {
+                    const stars = "************************";
+                    end = s.put(x, y, stars[0..@min(f.len, stars.len)], .normal);
+                    if (f.len > stars.len) {
+                        end = s.print(end + 1, y, .muted, "共 {d} 字符", .{f.len});
+                    }
+                }
                 if (focused) {
                     _ = s.put(end, y, " ", .selected);
                 }
             },
             .choice => _ = s.print(x, y, style, "‹ {s} ›", .{f.selected()}),
-            .toggle => _ = s.put(x, y, if (f.on) "‹ 开 ›" else "‹ 关 ›", if (f.on) Screen.Style.good else .muted),
+            .toggle => _ = s.put(x, y, if (f.on) "‹ 开 ›" else "‹ 关 ›", if (f.on) Screen.Style.good else .bad),
         }
     }
 };

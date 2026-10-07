@@ -17,6 +17,7 @@ agent: []const u8,
 netdistro: []const u8,
 
 pub const NetStatus = struct {
+    version: []const u8 = "",
     protected: bool = false,
     foreign_killswitch: []const u8 = "",
     guard: bool = false,
@@ -44,6 +45,22 @@ pub fn netStatus(env: Env) !?NetStatus {
     }
     const r = try env.wsl.capture(env.arena, Wsl.net_distro, &.{ Wsl.agent_path, "status", "--json" }, null);
     return std.json.parseFromSliceLeaky(NetStatus, env.arena, r.stdout, .{ .ignore_unknown_fields = true }) catch error.BadStatus;
+}
+
+pub const NodeEntry = struct {
+    id: []const u8 = "",
+    name: []const u8 = "",
+    host: []const u8 = "",
+    ip: []const u8 = "",
+    port: u16 = 0,
+    security: []const u8 = "",
+    transport: []const u8 = "",
+    active: bool = false,
+};
+
+pub fn nodeList(env: Env) ![]NodeEntry {
+    const r = try env.wsl.capture(env.arena, Wsl.net_distro, &.{ Wsl.agent_path, "node", "list", "--json" }, null);
+    return std.json.parseFromSliceLeaky([]NodeEntry, env.arena, r.stdout, .{ .ignore_unknown_fields = true });
 }
 
 /// 联网之前必须确认 VM 已受保护 守护进程在或者另一套 kill-switch 在

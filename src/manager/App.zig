@@ -10,6 +10,7 @@ const Wsl = @import("Wsl.zig");
 const page_distro = @import("page/distro.zig");
 const page_distros = @import("page/distros.zig");
 const page_network = @import("page/network.zig");
+const page_nodes = @import("page/nodes.zig");
 const page_wsl = @import("page/wsl.zig");
 const winsys = @import("winsys.zig");
 const wslconfig = @import("wslconfig.zig");
@@ -25,6 +26,7 @@ pub const Page = union(enum) {
     network,
     distros,
     distro: []const u8,
+    nodes,
 };
 
 pub const DistroDetail = struct {
@@ -48,6 +50,7 @@ pub const Info = struct {
     version: ?Wsl.Version = null,
     distros: []Wsl.Distro = &.{},
     net: ?Env.NetStatus = null,
+    nodes: []Env.NodeEntry = &.{},
     net_error: []const u8 = "",
     autostart: bool = false,
     wslconfig_path: []const u8 = "",
@@ -88,6 +91,12 @@ pub const Modal = union(enum) {
         cursor: usize = 0,
         yes: *const fn (*App, []const u8) void,
     },
+    choose: struct {
+        title: []const u8,
+        text: []const u8,
+        items: []Menu.Item,
+        cursor: usize = 0,
+    },
     log,
     note: struct { title: []const u8, text: []const u8 },
 };
@@ -102,7 +111,9 @@ tab: Tab = .wsl,
 detail: ?[]const u8 = null,
 detail_buf: [64]u8 = undefined,
 /// 每页各自记住选中项 下标同 Page 的 tag
-cursors: [4]usize = .{ 0, 0, 0, 0 },
+cursors: [5]usize = .{ 0, 0, 0, 0, 0 },
+/// 网络页下的节点列表
+nodes_open: bool = false,
 modal: Modal = .none,
 /// 弹窗里用到的字符串 关闭弹窗时一起释放
 modal_arena: std.heap.ArenaAllocator,
@@ -162,6 +173,9 @@ pub fn page(app: *const App) Page {
     if (app.detail) |name| {
         return .{ .distro = name };
     }
+    if (app.nodes_open) {
+        return .nodes;
+    }
     return switch (app.tab) {
         .wsl => .wsl,
         .network => .network,
@@ -200,6 +214,20 @@ pub fn confirm(app: *App, opts: Confirm, yes: *const fn (*App, []const u8) void)
     o.arg = a.dupe(u8, opts.arg) catch opts.arg;
     o.typed = a.dupe(u8, opts.typed) catch opts.typed;
     app.modal = .{ .confirm = .{ .opts = o, .yes = yes } };
+}
+
+/// 菜单项的文字和参数复制进弹窗内存
+pub fn choose(app: *App, title: []const u8, text: []const u8, items: []const Menu.Item) void {
+    const a = app.modalAlloc();
+    const copy = a.dupe(Menu.Item, items) catch return;
+    for (copy) |*it| {
+        it.arg = a.dupe(u8, it.arg) catch it.arg;
+    }
+    app.modal = .{ .choose = .{
+        .title = a.dupe(u8, title) catch title,
+        .text = a.dupe(u8, text) catch text,
+        .items = copy,
+    } };
 }
 
 pub fn note(app: *App, title: []const u8, text: []const u8) void {
@@ -312,6 +340,7 @@ fn loadInfo(env: Env, log: *Log, info: *Info, win_env: *const std.process.Enviro
             info.net_error = @errorName(err);
             break :blk null;
         };
+        info.nodes = sub.nodeList() catch &.{};
     }
     info.autostart = winsys.autostartEnabled(env.wsl.runner, a);
     info.wslconfig_path = wslconfig.path(a, win_env) catch "";
@@ -361,6 +390,17 @@ pub fn key(app: *App, k: Key) void {
             app.confirmKey(m, k);
             return;
         },
+        .choose => |*m| {
+            if (k == .escape) {
+                return app.closeModal();
+            }
+            const item = Menu.key(m.items, &m.cursor, k) orelse return;
+            const arg = app.gpa.dupe(u8, item.arg) catch return;
+            defer app.gpa.free(arg);
+            app.closeModal();
+            item.run(app, arg);
+            return;
+        },
         .log => {
             switch (k) {
                 .escape, .enter => {
@@ -386,8 +426,9 @@ pub fn key(app: *App, k: Key) void {
     switch (k) {
         .tab, .right => return app.switchTab(1),
         .back_tab, .left => return app.switchTab(-1),
-        .escape => if (app.detail != null) {
+        .escape => if (app.detail != null or app.nodes_open) {
             app.detail = null;
+            app.nodes_open = false;
             return;
         },
         .char => |c| switch (c) {
@@ -469,8 +510,14 @@ pub fn openDetail(app: *App, name: []const u8) void {
     app.refresh();
 }
 
+pub fn openNodes(app: *App) void {
+    app.nodes_open = true;
+    app.cursors[@backingInt(std.meta.Tag(Page).nodes)] = 0;
+}
+
 fn setTab(app: *App, t: Tab) void {
     app.detail = null;
+    app.nodes_open = false;
     app.tab = t;
 }
 
@@ -491,6 +538,7 @@ fn pageItems(app: *App) []const Menu.Item {
         .network => page_network.items(app, a),
         .distros => page_distros.items(app, a),
         .distro => |name| page_distro.items(app, a, name),
+        .nodes => page_nodes.items(app, a),
     } catch &.{};
 }
 
@@ -520,6 +568,13 @@ pub fn draw(app: *App) void {
             hints = "↑↓ 移动" ++ Screen.glyph.dot ++ "←→ 切换选项" ++ Screen.glyph.dot ++ "回车 下一项" ++ Screen.glyph.dot ++ "Esc 取消";
         },
         .confirm => |m| hints = drawConfirm(s, m),
+        .choose => |m| {
+            var y = pane(s, 1, .title, m.title, "");
+            y = putLines(s, y, m.text, .normal) + 1;
+            _ = Menu.draw(s, 2, y, m.items, m.cursor);
+            info_line = Menu.desc(m.items, m.cursor);
+            hints = "↑↓ 选择" ++ Screen.glyph.dot ++ "回车 确认" ++ Screen.glyph.dot ++ "Esc 返回";
+        },
         .note => |m| {
             const y = pane(s, 1, .title, m.title, "");
             _ = putLines(s, y, m.text, .normal);
@@ -546,10 +601,14 @@ fn drawHeader(app: *App) void {
             .distros => " 发行版 ",
         };
         const current = t == app.tab;
-        x = s.put(x, 0, label, if (current and app.detail == null) Screen.Style.selected else if (current) .strong else .muted) + 1;
+        const sub = app.detail != null or app.nodes_open;
+        x = s.put(x, 0, label, if (current and !sub) Screen.Style.selected else if (current) .strong else .muted) + 1;
     }
     if (app.detail) |name| {
         _ = s.print(x, 0, .strong, "› {s}", .{name});
+    }
+    if (app.nodes_open) {
+        _ = s.put(x, 0, "› 节点", .strong);
     }
     if (app.busy()) {
         const job = app.job.?;
@@ -573,6 +632,7 @@ fn drawPage(app: *App, desc: *[]const u8) []const u8 {
         .network => page_network.draw(app, s),
         .distros => page_distros.draw(app, s),
         .distro => |name| page_distro.draw(app, s, name),
+        .nodes => page_nodes.draw(app, s),
     };
     const items = app.pageItems();
     const cur = app.cursor();
@@ -587,7 +647,7 @@ fn drawPage(app: *App, desc: *[]const u8) []const u8 {
     const d = Screen.glyph.dot;
     const base = "↑↓ 选择" ++ d ++ "回车 执行" ++ d ++ "Tab 切页" ++ d ++ "r 刷新";
     const has_log = app.job != null or app.last != null;
-    if (app.detail != null) {
+    if (app.detail != null or app.nodes_open) {
         return if (has_log) base ++ d ++ "l 任务日志" ++ d ++ "Esc 返回" else base ++ d ++ "Esc 返回";
     }
     return if (has_log) base ++ d ++ "l 任务日志" ++ d ++ "q 退出" else base ++ d ++ "q 退出";
