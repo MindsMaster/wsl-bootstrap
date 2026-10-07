@@ -61,6 +61,21 @@ pub const NodeEntry = struct {
     active: bool = false,
 };
 
+pub const LanEntry = struct {
+    iface: []const u8 = "",
+    address: []const u8 = "",
+    gateway: []const u8 = "",
+    up: bool = false,
+    proxy_tun: bool = false,
+    excluded: bool = false,
+    pinned: bool = false,
+};
+
+pub fn lanList(env: Env) ![]LanEntry {
+    const r = try env.wsl.capture(env.arena, Wsl.net_distro, &.{ Wsl.agent_path, "lan", "--all", "--json" }, null);
+    return std.json.parseFromSliceLeaky([]LanEntry, env.arena, r.stdout, .{ .ignore_unknown_fields = true });
+}
+
 pub const SubEntry = struct {
     id: []const u8 = "",
     name: []const u8 = "",

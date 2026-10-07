@@ -100,6 +100,7 @@ pub fn items(app: *App, a: std.mem.Allocator, name: []const u8) ![]const Menu.It
     }
     try list.append(a, .{ .label = "导出备份", .desc = "wsl --export 成 tar 文件", .run = openExport });
     if (d.state == .running) {
+        try list.append(a, .{ .label = "重启发行版", .desc = "停止后马上重新启动 让开机服务和设置生效", .danger = true, .run = askRestart });
         try list.append(a, .{ .label = "停止发行版", .desc = "里面的终端和程序都会断开 下次打开时重新启动", .danger = true, .run = askTerminate });
     }
     try list.append(a, .{ .label = "删除发行版", .desc = "wsl --unregister 虚拟磁盘一起删除", .danger = true, .run = askUnregister });
@@ -147,6 +148,33 @@ fn askTerminate(app: *App, _: []const u8) void {
         .danger = true,
         .arg = name,
     }, terminate);
+}
+
+fn askRestart(app: *App, _: []const u8) void {
+    const name = app.detail orelse return;
+    app.confirm(.{
+        .title = "重启发行版",
+        .text = "wsl --terminate 后重新启动\n里面的终端 编辑器 Claude Code 等程序都会断开",
+        .yes_label = "重启",
+        .danger = true,
+        .arg = name,
+    }, restart);
+}
+
+fn restart(app: *App, name: []const u8) void {
+    const job = app.newJob("重启发行版") orelse return;
+    app.runJob(job, restartJob, .{job.arena.allocator().dupe(u8, name) catch return});
+}
+
+fn restartJob(env: Env, log: *Log, name: []const u8) !void {
+    if (try env.wsl.terminate(log, name) != 0) {
+        return error.TerminateFailed;
+    }
+    log.add("==> 重新启动");
+    if (try env.wsl.exec(log, name, &.{"/bin/true"}, null) != 0) {
+        return error.StartFailed;
+    }
+    log.add("==> 已启动 打开终端即可进入");
 }
 
 fn terminate(app: *App, name: []const u8) void {

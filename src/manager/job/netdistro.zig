@@ -43,3 +43,19 @@ pub fn upgradeAgent(env: Env, log: *Log) !void {
     try env.ensureAgent(log);
     log.add("==> agent 已是最新");
 }
+
+/// 守护进程和 sing-box 重启 旧进程退出时防火墙与黑洞保留
+pub fn restart(env: Env, log: *Log) !void {
+    try env.ensureAgent(log);
+    if (try env.wsl.exec(log, Wsl.net_distro, &.{ Wsl.agent_path, "restart" }, null) != 0) {
+        return error.RestartFailed;
+    }
+}
+
+/// name 为 auto 时恢复自动选择
+pub fn setUplink(env: Env, log: *Log, name: []const u8) !void {
+    try env.ensureAgent(log);
+    if (try env.wsl.exec(log, Wsl.net_distro, &.{ Wsl.agent_path, "config", "set", "uplink", name }, null) != 0) {
+        return error.ConfigRejected;
+    }
+}

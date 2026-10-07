@@ -86,7 +86,19 @@ pub fn items(app: *App, a: std.mem.Allocator) ![]const Menu.Item {
         }
     }
     const auto_text, const auto_style = Menu.onOff(app.info.autostart);
+    var pinned = false;
+    for (app.info.lans) |l| {
+        pinned = pinned or l.pinned;
+    }
+    const uplink_now = if (app.info.net) |st| st.uplink else "";
     try list.appendSlice(a, &.{
+        .{
+            .label = "上行网卡",
+            .note = try std.fmt.allocPrint(a, "{s}{s}{s}", .{ if (uplink_now.len != 0) uplink_now else "无", Screen.glyph.dot, if (pinned) "手动指定" else "自动" }),
+            .note_style = if (uplink_now.len == 0) .bad else .muted,
+            .desc = "连节点用的真实网卡 自动选择时不会用 Windows 代理软件的 TUN",
+            .run = openUplink,
+        },
         .{ .label = "节点", .note = active, .note_style = if (app.info.net == null or app.info.net.?.node.len == 0) .warn else .muted, .desc = "添加 切换 删除 vless 节点", .run = openNodes },
         .{ .label = "网络规则", .desc = "直连网段 排除网卡 隧道内 DNS 健康探测", .run = openRules },
         .{ .label = "出口检查", .desc = "查询现在的出口 IP 与地区", .run = runCheck },
@@ -111,12 +123,52 @@ pub fn items(app: *App, a: std.mem.Allocator) ![]const Menu.Item {
     if (foreign) {
         return list.items;
     }
+    try list.append(a, .{ .label = "重启网络服务", .desc = "重启守护进程和 sing-box 防火墙与黑洞一直保留", .run = runRestart });
     if (st.guard) {
         try list.append(a, .{ .label = "停用网络防护", .desc = "停掉守护进程 整个 WSL 直连真实网络", .danger = true, .run = askDisable });
     } else {
         try list.append(a, .{ .label = "启用网络防护", .desc = "启动守护进程与防火墙", .run = runEnable });
     }
     return list.items;
+}
+
+fn runRestart(app: *App, _: []const u8) void {
+    const job = app.newJob("重启网络服务") orelse return;
+    app.runJob(job, netdistro.restart, .{});
+}
+
+fn openUplink(app: *App, _: []const u8) void {
+    const a = app.modalAlloc();
+    var opts: std.ArrayList(Menu.Item) = .empty;
+    opts.append(a, .{ .label = "自动", .desc = "按 Windows 网关路由挑 metric 最小的真实网卡", .run = setUplink, .arg = "auto" }) catch return;
+    for (app.info.lans) |l| {
+        if (l.excluded and !l.proxy_tun) {
+            continue;
+        }
+        const note = std.fmt.allocPrint(a, "{s}  网关 {s}{s}{s}", .{
+            l.address,
+            if (l.gateway.len != 0) l.gateway else "未知",
+            if (l.proxy_tun) "  Windows 代理 TUN" else "",
+            if (l.pinned) "  当前指定" else "",
+        }) catch "";
+        opts.append(a, .{
+            .label = l.iface,
+            .note = note,
+            .note_style = if (l.proxy_tun) .warn else .muted,
+            .desc = if (l.proxy_tun) "流量会再经 Windows 上的代理软件 它关掉时这块网卡会消失" else if (l.gateway.len == 0) "没找到网关 选了可能连不上节点" else "",
+            .run = setUplink,
+            .arg = l.iface,
+        }) catch return;
+    }
+    opts.append(a, .{ .label = "返回", .run = noop }) catch return;
+    app.choose("上行网卡", "选择连节点用的网卡 手动指定后网卡消失时不会换到别的网卡", opts.items);
+}
+
+fn noop(_: *App, _: []const u8) void {}
+
+fn setUplink(app: *App, name: []const u8) void {
+    const job = app.newJob("设置上行网卡") orelse return;
+    app.runJob(job, netdistro.setUplink, .{job.arena.allocator().dupe(u8, name) catch return});
 }
 
 fn openNodes(app: *App, _: []const u8) void {
