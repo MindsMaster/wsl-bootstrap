@@ -185,6 +185,26 @@ check "换节点后 sing-box 在运行" wait_for 3000 singbox_running
 check "状态里的上行网卡是 lan1" test "$(state_field uplink)" == lan1
 "$BIN" set-node "vless://u-1@$NODE:443?security=tls&fp=chrome#test" --ip "$NODE" >/dev/null
 check "换回原节点后 sing-box 在运行" wait_for 3000 singbox_running
+
+echo "上行网卡断开再恢复 WSL 不一定补回默认路由"
+ip link set lan1 down
+check "断开后只剩黑洞默认路由" wait_for 1000 only_blackhole_default
+check "断开时防火墙完整规则仍在" table_owner guard
+ip link set lan1 up
+if wait_for 3000 node_via 10.77.0.1 lan1; then ok "恢复后 ${ELAPSED}ms 内节点路由回到 lan1"; else bad "恢复后节点路由没有回来"; fi
+check "恢复后 sing-box 在运行" wait_for 3000 singbox_running
+
+echo "上行网卡被删除后重建"
+ip link del lan1
+check "删除后只剩黑洞默认路由" wait_for 1000 only_blackhole_default
+check "删除时防火墙完整规则仍在" table_owner guard
+ip link add lan1 type dummy
+ip link set lan1 up
+ip addr add 10.77.0.5/24 dev lan1
+ip route add default via 10.77.0.1 dev lan1 metric 10
+if wait_for 3000 node_via 10.77.0.1 lan1; then ok "重建后 ${ELAPSED}ms 内节点路由回到 lan1"; else bad "重建后节点路由没有回来"; fi
+check "重建时带来的默认路由被清除" wait_for 1000 only_blackhole_default
+check "重建后 sing-box 在运行" wait_for 3000 singbox_running
 "$BIN" config set lan-cidr 192.168.50.0/24 >/dev/null
 "$BIN" config set lan-gateway 192.168.50.1 >/dev/null
 
