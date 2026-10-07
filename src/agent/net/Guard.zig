@@ -176,7 +176,6 @@ pub const Enforced = struct {
 
 /// 黑洞默认路由 节点直连路由 清除外来默认路由
 /// 先探测上行再删默认路由 实时默认路由是最好的上行线索
-/// 默认路由删光后换了节点 新 IP 还没有直连路由 只能沿用 last
 pub fn enforce(gpa: Allocator, sock: *netlink.Socket, cfg: Config, node_ip: ?ip4.Addr, last: ?lan.Uplink) !Enforced {
     var snap = try lan.Snapshot.take(gpa, sock);
     defer snap.deinit();
@@ -184,14 +183,7 @@ pub fn enforce(gpa: Allocator, sock: *netlink.Socket, cfg: Config, node_ip: ?ip4
         snap.deinit();
         snap = try lan.Snapshot.take(gpa, sock);
     }
-    var up = try lan.detect(gpa, cfg, &snap, node_ip);
-    if (up == null) {
-        if (last) |l| {
-            if (snap.linkByIndex(l.index) != null) {
-                up = l;
-            }
-        }
-    }
+    const up = try lan.detect(gpa, cfg, &snap, node_ip, last);
     if (up) |u| {
         if (node_ip) |ip| {
             try ensureNodeRoute(sock, &snap, u, ip);

@@ -205,6 +205,40 @@ ip route add default via 10.77.0.1 dev lan1 metric 10
 if wait_for 3000 node_via 10.77.0.1 lan1; then ok "重建后 ${ELAPSED}ms 内节点路由回到 lan1"; else bad "重建后节点路由没有回来"; fi
 check "重建时带来的默认路由被清除" wait_for 1000 only_blackhole_default
 check "重建后 sing-box 在运行" wait_for 3000 singbox_running
+
+echo "Windows 侧代理 TUN 出现又消失 mirrored 模式会同步进来"
+ip route add 10.77.0.1/32 dev lan1 scope link metric 25
+ip link add ptun type dummy
+ip link set ptun up
+ip addr add 172.18.0.1/30 dev ptun
+ip route add default via 172.18.0.2 dev ptun metric 1
+check "代理 TUN 的默认路由被清除" wait_for 1000 only_blackhole_default
+sleep 1
+check "节点路由没有被代理 TUN 抢走" node_via 10.77.0.1 lan1
+ip link del ptun
+check "代理 TUN 消失后仍经 lan1" node_via 10.77.0.1 lan1
+
+echo "守护进程重启后默认路由已删光又换了节点 按 mirrored 网关主机路由找回网卡"
+kill -TERM "$DAEMON"
+wait "$DAEMON" || true
+"$BIN" guard 2>>"$WORK/daemon.log" &
+DAEMON=$!
+check "新的守护进程可达" wait_for 3000 guard_alive
+NODE3=198.51.100.9
+"$BIN" set-node "vless://33333333-0000-4000-8000-000000000000@node3.example.com:443?security=tls#n3" --ip "$NODE3" >/dev/null
+check "新节点路由经 lan1 的网关" wait_for 3000 bash -c "ip -4 route show $NODE3/32 | grep -q 'via 10.77.0.1 dev lan1'"
+check "sing-box 在运行" wait_for 3000 singbox_running
+
+echo "手动指定上行网卡"
+ip route add 192.168.50.1/32 dev lan0 scope link metric 30
+"$BIN" config set uplink lan0 >/dev/null
+check "指定 lan0 后节点路由切过去" wait_for 3000 bash -c "ip -4 route show $NODE3/32 | grep -q 'via 192.168.50.1 dev lan0'"
+check "状态里的上行网卡是 lan0" test "$(state_field uplink)" == lan0
+"$BIN" config set uplink auto >/dev/null
+sleep 1
+check "改回自动后沿用仍可用的 lan0 不来回跳" bash -c "ip -4 route show $NODE3/32 | grep -q 'via 192.168.50.1 dev lan0'"
+"$BIN" set-node "vless://u-1@$NODE:443?security=tls&fp=chrome#test" --ip "$NODE" >/dev/null
+check "换回原节点" wait_for 3000 node_via 10.77.0.1 lan1
 "$BIN" config set lan-cidr 192.168.50.0/24 >/dev/null
 "$BIN" config set lan-gateway 192.168.50.1 >/dev/null
 

@@ -89,6 +89,7 @@ test {
     _ = @import("net/ip4.zig");
     _ = @import("net/lan.zig");
     _ = @import("net/library.zig");
+    _ = @import("net/subs.zig");
     _ = @import("net/netlink.zig");
     _ = @import("net/singbox.zig");
     _ = @import("distro/Os.zig");

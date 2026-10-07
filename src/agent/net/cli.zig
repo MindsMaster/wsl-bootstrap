@@ -13,6 +13,7 @@ const hold = @import("hold.zig");
 const ip4 = @import("ip4.zig");
 const lan = @import("lan.zig");
 const library = @import("library.zig");
+const subs = @import("subs.zig");
 const netlink = @import("netlink.zig");
 const probe = @import("probe.zig");
 const singbox = @import("singbox.zig");
@@ -25,6 +26,7 @@ pub const commands = [_]Cli.Command{
     .{ .name = "lan", .args = "[--json|--tsv]", .summary = "可作上行的真实网卡", .group = .view, .run = lanList },
     .{ .name = "singbox-config", .summary = "打印将使用的 sing-box 配置", .group = .view, .run = singboxConfig },
     .{ .name = "set-node", .args = "[链接] [--ip IPv4] [--dry-run]", .summary = "设置 vless:// 节点 不给链接则从标准输入读", .group = .network, .run = setNode },
+    .{ .name = "sub", .args = "list | add --url 地址 [--name 名称] | sync <id> | rename <id> <名称> | remove <id>", .summary = "订阅分组 同步时整组替换", .group = .network, .run = subCmd },
     .{ .name = "node", .args = "list | parse [--url 订阅] | import [--use-first] | add [链接] [--ip IPv4] [--use] | use <id> [--ip IPv4] | remove <id>", .summary = "保存多个节点 随时切换 支持 vless hysteria2 tuic", .group = .network, .run = nodeCmd },
     .{ .name = "config", .args = "show | set <键> <值> | add|remove <列表> <值>", .summary = "上行 DNS 直连网段 排除网卡 健康检查", .group = .network, .run = config },
     .{ .name = "leaktest", .summary = "暂停 sing-box 验证真实网络被阻断 再恢复", .group = .network, .run = leaktest },
@@ -215,6 +217,9 @@ fn lanList(c: *Cli, args: []const [:0]const u8) !Exit {
     defer sock.close();
     var snap = try lan.Snapshot.take(c.gpa, &sock);
     defer snap.deinit();
+    if (Cli.hasFlag(args, "--all")) {
+        return lanAll(c, cfg, &snap);
+    }
     const cands = try lan.candidates(c.arena, cfg, &snap);
     if (c.json) {
         var s: std.json.Stringify = .{ .writer = c.out, .options = .{ .whitespace = .indent_2 } };
@@ -258,7 +263,7 @@ fn singboxConfig(c: *Cli, _: []const [:0]const u8) !Exit {
     defer sock.close();
     var snap = try lan.Snapshot.take(c.gpa, &sock);
     defer snap.deinit();
-    const up = try lan.detect(c.arena, cfg, &snap, node.ipAddr());
+    const up = try lan.detect(c.arena, cfg, &snap, node.ipAddr(), null);
     const name = if (up) |*u| u.name() else "eth0";
     try singbox.render(c.out, cfg, node, try c.arena.dupe(u8, name));
     return .ok;
@@ -465,8 +470,14 @@ fn download(c: *Cli, url: []const u8) ![]const u8 {
 
 /// 标准输入是剪贴板文本 或 --url 给订阅地址 只解析不保存
 fn nodeParse(c: *Cli, args: []const [:0]const u8) !Exit {
-    const text = if (Cli.flagValue(args, "--url")) |url|
-        fetchSubscription(c, url) catch return .failed
+    var url = Cli.flagValue(args, "--url");
+    if (Cli.flagValue(args, "--sub")) |id| {
+        const list = try subs.load(c.io, c.arena, c.etc(subs.file_name));
+        const sub = subs.find(list, id) orelse return c.fail("没有这个订阅 {s}", .{id});
+        url = sub.url;
+    }
+    const text = if (url) |u|
+        fetchSubscription(c, u) catch return .failed
     else
         try readStdinAll(c);
     if (library.looksLikeClash(text)) {
@@ -574,6 +585,7 @@ fn nodeList(c: *Cli, dir: []const u8) !Exit {
                 .security = @tagName(e.node.security),
                 .transport = e.node.kind(),
                 .protocol = @tagName(e.node.protocol),
+                .group = e.node.group,
                 .active = active_id != null and std.mem.eql(u8, &e.id, &active_id.?),
             });
         }
@@ -585,6 +597,34 @@ fn nodeList(c: *Cli, dir: []const u8) !Exit {
         const on = active_id != null and std.mem.eql(u8, &e.id, &active_id.?);
         try c.out.print("{s} {s}  {s}  {s}:{d}\n", .{ if (on) "*" else " ", &e.id, library.label(e.node), e.node.host, e.node.port });
     }
+    return .ok;
+}
+
+/// 给管理器挑上行网卡 列出所有有 IPv4 地址的网卡
+fn lanAll(c: *Cli, cfg: Config, snap: *const lan.Snapshot) !Exit {
+    var auto = cfg;
+    auto.uplink = "";
+    var s: std.json.Stringify = .{ .writer = c.out, .options = .{ .whitespace = .indent_2 } };
+    try s.beginArray();
+    for (snap.links) |*link| {
+        const cidr = snap.firstCidr(link.index) orelse continue;
+        const name = link.name();
+        if (std.mem.eql(u8, name, "lo") or std.mem.eql(u8, name, singbox.tun_if) or std.mem.eql(u8, name, lan.null_if)) {
+            continue;
+        }
+        const hint = lan.gatewayHint(snap, link.index);
+        try s.write(.{
+            .iface = name,
+            .address = try c.arena.print("{f}", .{cidr}),
+            .gateway = if (hint) |h| try c.arena.print("{f}", .{h.gw}) else "",
+            .up = link.up,
+            .proxy_tun = lan.proxyTun(snap, link.index),
+            .excluded = lan.excluded(auto, snap, link.index),
+            .pinned = std.mem.eql(u8, cfg.uplink, name),
+        });
+    }
+    try s.endArray();
+    try c.out.writeAll("\n");
     return .ok;
 }
 
@@ -630,7 +670,7 @@ fn config(c: *Cli, args: []const [:0]const u8) !Exit {
         return .ok;
     }
     if (args.len != 3) {
-        return c.usage("config show | set <键> <值> | add|remove <列表> <值>\n  键: lan-cidr lan-gateway remote-dns mixed-port singbox health-interval health-timeout health-failures\n  列表: local-cidrs exclude-cidrs exclude-ifaces foreign-ifaces  set 时用逗号分隔整体替换");
+        return c.usage("config show | set <键> <值> | add|remove <列表> <值>\n  键: uplink 网卡名或 auto  lan-cidr lan-gateway 可设 none  remote-dns mixed-port singbox health-interval health-timeout health-failures\n  列表: local-cidrs exclude-cidrs exclude-ifaces foreign-ifaces  set 时用逗号分隔整体替换");
     }
     if (!c.requireRoot()) {
         return .failed;
@@ -638,7 +678,20 @@ fn config(c: *Cli, args: []const [:0]const u8) !Exit {
     const key = args[1];
     const val: []const u8 = args[2];
     if (std.mem.eql(u8, sub, "set")) {
-        if (std.mem.eql(u8, key, "lan-cidr")) {
+        if (std.mem.eql(u8, key, "uplink")) {
+            if (std.mem.eql(u8, val, "auto")) {
+                cfg.uplink = "";
+            } else {
+                if (val.len == 0 or val.len > 15 or std.mem.indexOfAny(u8, val, " /") != null) {
+                    return c.fail("网卡名无效: {s}", .{val});
+                }
+                cfg.uplink = val;
+            }
+        } else if (std.mem.eql(u8, key, "lan-cidr") and std.mem.eql(u8, val, "none")) {
+            cfg.lan_cidr = "";
+        } else if (std.mem.eql(u8, key, "lan-gateway") and std.mem.eql(u8, val, "none")) {
+            cfg.lan_gateway = "";
+        } else if (std.mem.eql(u8, key, "lan-cidr")) {
             const cidr = ip4.Cidr.parse(val) catch return c.fail("不是有效网段: {s}", .{val});
             cfg.lan_cidr = try c.arena.print("{f}", .{cidr.network()});
         } else if (std.mem.eql(u8, key, "lan-gateway")) {
@@ -849,5 +902,144 @@ fn firewallUp(c: *Cli, _: []const [:0]const u8) !Exit {
         error.ForeignKillswitch => return c.fail("另一套 kill-switch 正在管理网络 不做改动", .{}),
         else => return err,
     };
+    return .ok;
+}
+
+fn subCmd(c: *Cli, args: []const [:0]const u8) !Exit {
+    const sub = if (args.len > 0) args[0] else "";
+    const rest = if (args.len > 0) args[1..] else args;
+    const path = c.etc(subs.file_name);
+    const dir = c.etc("nodes");
+    const list = try subs.load(c.io, c.arena, path);
+    const nodes = try library.list(c.io, c.arena, dir);
+    if (std.mem.eql(u8, sub, "list")) {
+        var s: std.json.Stringify = .{ .writer = c.out, .options = .{ .whitespace = .indent_2 } };
+        try s.beginArray();
+        for (list) |x| {
+            var count: usize = 0;
+            for (nodes) |e| {
+                count += @intFromBool(std.mem.eql(u8, e.node.group, x.id));
+            }
+            try s.write(.{ .id = x.id, .name = x.name, .updated = x.updated, .count = count });
+        }
+        try s.endArray();
+        try c.out.writeAll("\n");
+        return .ok;
+    }
+    if (!c.requireRoot()) {
+        return .failed;
+    }
+    const usage = "sub list | add --url 地址 [--name 名称] | sync <id> | rename <id> <名称> | remove <id>";
+    if (std.mem.eql(u8, sub, "add")) {
+        const url = Cli.flagValue(rest, "--url") orelse return c.usage(usage);
+        if (!std.mem.startsWith(u8, url, "http://") and !std.mem.startsWith(u8, url, "https://")) {
+            return c.fail("订阅地址要以 http:// 或 https:// 开头", .{});
+        }
+        const id = subs.idOf(url);
+        if (subs.find(list, &id) == null) {
+            const name = Cli.flagValue(rest, "--name") orelse subs.defaultName(url);
+            const grown = try c.arena.alloc(subs.Sub, list.len + 1);
+            @memcpy(grown[0..list.len], list);
+            grown[list.len] = .{ .id = &id, .name = name, .url = url };
+            try fsx.ensureDir(c.io, c.paths.etc);
+            try subs.save(c.io, c.gpa, path, grown);
+        }
+        try c.out.print("{s}\n", .{&id});
+        return .ok;
+    }
+    if (rest.len == 0) {
+        return c.usage(usage);
+    }
+    const target = subs.find(list, rest[0]) orelse return c.fail("没有这个订阅 {s}", .{rest[0]});
+    const active = loadNode(c);
+    const active_id: ?[8]u8 = if (active) |n| library.id(n) else null;
+    if (std.mem.eql(u8, sub, "rename")) {
+        if (rest.len < 2 or rest[1].len == 0) {
+            return c.usage(usage);
+        }
+        target.name = rest[1];
+        try subs.save(c.io, c.gpa, path, list);
+        try c.ok("订阅改名为 {s}", .{target.name});
+        return .ok;
+    }
+    if (std.mem.eql(u8, sub, "remove")) {
+        for (nodes) |e| {
+            if (std.mem.eql(u8, e.node.group, target.id) and active_id != null and std.mem.eql(u8, &e.id, &active_id.?)) {
+                return c.fail("正在使用的节点属于这个订阅 先切换到别的节点", .{});
+            }
+        }
+        var removed: usize = 0;
+        for (nodes) |e| {
+            if (std.mem.eql(u8, e.node.group, target.id)) {
+                library.remove(c.io, c.gpa, dir, &e.id) catch continue;
+                removed += 1;
+            }
+        }
+        var kept: std.ArrayList(subs.Sub) = .empty;
+        for (list) |x| {
+            if (!std.mem.eql(u8, x.id, target.id)) {
+                try kept.append(c.arena, x);
+            }
+        }
+        try subs.save(c.io, c.gpa, path, kept.items);
+        try c.ok("已删除订阅和其中 {d} 个节点", .{removed});
+        return .ok;
+    }
+    if (std.mem.eql(u8, sub, "sync")) {
+        return subSync(c, dir, path, list, target, nodes, active_id);
+    }
+    return c.usage(usage);
+}
+
+/// 标准输入每行 `IP<TAB>链接` 整组替换 正在使用的节点即使不在新列表里也保留
+fn subSync(c: *Cli, dir: []const u8, path: []const u8, list: []subs.Sub, target: *subs.Sub, nodes: []library.Entry, active_id: ?[8]u8) !Exit {
+    const text = try readStdinAll(c);
+    var fresh: std.ArrayList([8]u8) = .empty;
+    var it = std.mem.tokenizeAny(u8, text, "\r\n");
+    while (it.next()) |line| {
+        const tab = std.mem.indexOfScalar(u8, line, '\t') orelse continue;
+        var node = Node.parseLink(c.arena, line[tab + 1 ..]) catch |err| {
+            try c.bad("跳过 {s}", .{Node.errorText(err)});
+            continue;
+        };
+        const ip = line[0..tab];
+        if (ip.len != 0) {
+            _ = ip4.Addr.parse(ip) catch {
+                try c.bad("跳过 {s} IP 无效", .{library.label(node)});
+                continue;
+            };
+            node.ip = ip;
+        } else if (!node.hostIsIp()) {
+            try c.bad("跳过 {s} 域名没有解析出 IP", .{library.label(node)});
+            continue;
+        }
+        node.group = target.id;
+        try fresh.append(c.arena, try library.save(c.io, c.gpa, dir, node));
+    }
+    if (fresh.items.len == 0) {
+        return c.fail("订阅里没有可用的节点 保留原有节点", .{});
+    }
+    var removed: usize = 0;
+    for (nodes) |e| {
+        if (!std.mem.eql(u8, e.node.group, target.id)) {
+            continue;
+        }
+        var still = false;
+        for (fresh.items) |f| {
+            still = still or std.mem.eql(u8, &f, &e.id);
+        }
+        if (still) {
+            continue;
+        }
+        if (active_id != null and std.mem.eql(u8, &e.id, &active_id.?)) {
+            try c.warn("正在使用的 {s} 已不在订阅里 先保留 切换后再删", .{library.label(e.node)});
+            continue;
+        }
+        library.remove(c.io, c.gpa, dir, &e.id) catch continue;
+        removed += 1;
+    }
+    target.updated = std.Io.Clock.real.now(c.io).toSeconds();
+    try subs.save(c.io, c.gpa, path, list);
+    try c.ok("订阅 {s} 同步完成 {d} 个节点 删除 {d} 个", .{ target.name, fresh.items.len, removed });
     return .ok;
 }

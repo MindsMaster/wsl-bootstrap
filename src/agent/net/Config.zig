@@ -15,6 +15,8 @@ pub const Health = struct {
     failures: u32 = 3,
 };
 
+/// 手动指定的上行网卡名 空表示自动
+uplink: []const u8 = "",
 lan_cidr: []const u8 = "",
 lan_gateway: []const u8 = "",
 exclude_cidrs: []const []const u8 = &.{ "26.0.0.0/8", "25.0.0.0/8" },

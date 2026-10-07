@@ -95,10 +95,21 @@ fn glob(pattern: []const u8, s: []const u8) bool {
     return s.len != 0 and s[0] == pattern[0] and glob(pattern[1..], s[1..]);
 }
 
+/// Windows 侧代理软件的 TUN 网卡 mirrored 模式会把它同步进来 关掉代理就消失
+/// 172.18.0.1/30 是 sing-box v2rayN proxy-dash 的默认 198.18.0.0/15 是 Clash 系
+pub const proxy_tun_cidrs = [_][]const u8{ "172.18.0.0/30", "172.19.0.0/30", "198.18.0.0/15" };
+
+/// 指定了 uplink 时其他网卡一律不用 代理 TUN 网段只在被指定时才用
 pub fn excluded(cfg: Config, snap: *const Snapshot, index: u32) bool {
     const link = snap.linkByIndex(index) orelse return true;
     const name = link.name();
     if (std.mem.eql(u8, name, "lo") or std.mem.eql(u8, name, singbox.tun_if) or std.mem.eql(u8, name, null_if)) {
+        return true;
+    }
+    if (cfg.uplink.len != 0) {
+        return !std.mem.eql(u8, name, cfg.uplink);
+    }
+    if (proxyTun(snap, index)) {
         return true;
     }
     for (cfg.foreign_ifaces) |f| {
@@ -123,6 +134,53 @@ pub fn excluded(cfg: Config, snap: *const Snapshot, index: u32) bool {
         }
     }
     return false;
+}
+
+pub fn proxyTun(snap: *const Snapshot, index: u32) bool {
+    for (snap.addrs) |a| {
+        if (a.index != index) {
+            continue;
+        }
+        for (proxy_tun_cidrs) |c| {
+            const cidr = ip4.Cidr.parse(c) catch unreachable;
+            if (cidr.contains(a.cidr.addr)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/// mirrored 模式给每块网卡加一条到 Windows 网关的主机路由 默认路由被清掉后它还在
+pub fn gatewayHint(snap: *const Snapshot, index: u32) ?struct { gw: ip4.Addr, metric: u32 } {
+    const own = snap.firstCidr(index) orelse return null;
+    var best: ?netlink.Route = null;
+    for (snap.routes) |r| {
+        if (r.table != netlink.TABLE_MAIN or r.oif != index or r.dst.len != 32 or r.gateway != null or r.type != netlink.RTN.UNICAST) {
+            continue;
+        }
+        if (r.dst.addr.eql(own.addr) or !own.network().contains(r.dst.addr)) {
+            continue;
+        }
+        if (best == null or r.priority < best.?.priority) {
+            best = r;
+        }
+    }
+    const b = best orelse return null;
+    return .{ .gw = b.dst.addr, .metric = b.priority };
+}
+
+/// 网卡还在 有地址 网关在它的网段里
+fn usable(cfg: Config, snap: *const Snapshot, name: []const u8, gw: ip4.Addr) ?*const netlink.Link {
+    const link = snap.linkByName(name) orelse return null;
+    if (!link.up or excluded(cfg, snap, link.index)) {
+        return null;
+    }
+    const own = snap.firstCidr(link.index) orelse return null;
+    if (!own.network().contains(gw)) {
+        return null;
+    }
+    return link;
 }
 
 fn inLan(snap: *const Snapshot, lan: ip4.Cidr, index: u32) bool {
@@ -157,9 +215,10 @@ pub fn candidates(gpa: Allocator, cfg: Config, snap: *const Snapshot) ![]Uplink 
     return list.toOwnedSlice(gpa);
 }
 
-/// 实时默认路由优先 其次沿用已固定的节点路由 最后退回安装时记下的网段网关
+/// 实时默认路由优先 其次沿用已固定的节点路由 再次是上一次的上行
+/// 默认路由被清掉又换了节点时 按 mirrored 网关主机路由找回网卡 最后退回记下的网段网关
 /// 节点路由排在网段之前 否则换网后默认路由一被清掉就会切回旧网卡
-pub fn detect(gpa: Allocator, cfg: Config, snap: *const Snapshot, node_ip: ?ip4.Addr) !?Uplink {
+pub fn detect(gpa: Allocator, cfg: Config, snap: *const Snapshot, node_ip: ?ip4.Addr, last: ?Uplink) !?Uplink {
     const lan = cfg.lanCidr();
     const cands = try candidates(gpa, cfg, snap);
     defer gpa.free(cands);
@@ -185,6 +244,24 @@ pub fn detect(gpa: Allocator, cfg: Config, snap: *const Snapshot, node_ip: ?ip4.
             const link = snap.linkByIndex(r.oif) orelse continue;
             return .of(link, gw, 0);
         }
+    }
+    if (last) |l| {
+        if (usable(cfg, snap, l.name(), l.gateway)) |link| {
+            return .of(link, l.gateway, l.metric);
+        }
+    }
+    var hinted: ?Uplink = null;
+    for (snap.links) |*link| {
+        if (!link.up or excluded(cfg, snap, link.index)) {
+            continue;
+        }
+        const h = gatewayHint(snap, link.index) orelse continue;
+        if (hinted == null or h.metric < hinted.?.metric) {
+            hinted = .of(link, h.gw, h.metric);
+        }
+    }
+    if (hinted) |h| {
+        return h;
     }
     const l = lan orelse return null;
     const gw = cfg.lanGateway() orelse return null;

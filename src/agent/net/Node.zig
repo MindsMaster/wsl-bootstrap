@@ -12,6 +12,8 @@ pub const Transport = enum { tcp, ws, grpc, httpupgrade };
 /// 旧版 node.json 没有这个字段 都是 vless
 protocol: Protocol = .vless,
 name: []const u8 = "",
+/// 所属订阅的 id 空表示手动导入
+group: []const u8 = "",
 host: []const u8,
 /// 固定后的节点 IPv4 kill-switch 只放行它
 ip: []const u8,
