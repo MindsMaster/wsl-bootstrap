@@ -49,6 +49,12 @@ const win = if (is_windows) struct {
     extern "kernel32" fn GetExitCodeProcess(h: HANDLE, code: *u32) callconv(.winapi) BOOL;
     extern "kernel32" fn CloseHandle(h: HANDLE) callconv(.winapi) BOOL;
     extern "kernel32" fn GlobalMemoryStatusEx(s: *MemoryStatus) callconv(.winapi) BOOL;
+    extern "user32" fn OpenClipboard(owner: ?*anyopaque) callconv(.winapi) BOOL;
+    extern "user32" fn CloseClipboard() callconv(.winapi) BOOL;
+    extern "user32" fn GetClipboardData(format: u32) callconv(.winapi) ?HANDLE;
+    extern "kernel32" fn GlobalLock(h: HANDLE) callconv(.winapi) ?[*:0]const u16;
+    extern "kernel32" fn GlobalUnlock(h: HANDLE) callconv(.winapi) BOOL;
+    const CF_UNICODETEXT: u32 = 13;
 } else struct {};
 
 fn wide(a: Allocator, s: []const u8) ![:0]const u16 {
@@ -90,6 +96,21 @@ pub fn openShell(a: Allocator, distro: []const u8) !void {
     if (win.ShellExecuteExW(&info) == .FALSE) {
         return error.LaunchFailed;
     }
+}
+
+/// 剪贴板里的文字 没有文字时返回空
+pub fn clipboardText(a: Allocator) ![]const u8 {
+    if (!is_windows) {
+        return error.Unsupported;
+    }
+    if (win.OpenClipboard(null) == .FALSE) {
+        return error.ClipboardBusy;
+    }
+    defer _ = win.CloseClipboard();
+    const h = win.GetClipboardData(win.CF_UNICODETEXT) orelse return "";
+    const ptr = win.GlobalLock(h) orelse return "";
+    defer _ = win.GlobalUnlock(h);
+    return std.unicode.utf16LeToUtf8Alloc(a, std.mem.span(ptr));
 }
 
 pub fn memoryGb() u64 {

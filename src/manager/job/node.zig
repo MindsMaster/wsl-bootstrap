@@ -49,6 +49,69 @@ pub fn use(env: Env, log: *Log, id: []const u8, host: []const u8) !void {
     }
 }
 
+const Parsed = struct {
+    nodes: []const struct {
+        link: []const u8 = "",
+        name: []const u8 = "",
+        host: []const u8 = "",
+        port: u16 = 0,
+        kind: []const u8 = "",
+    } = &.{},
+    unsupported: u32 = 0,
+    invalid: u32 = 0,
+};
+
+/// 剪贴板里可能是一批链接 base64 或订阅地址 订阅交给网络发行版经隧道下载
+pub fn importText(env: Env, log: *Log, text: []const u8) !void {
+    const trimmed = std.mem.trim(u8, text, " \t\r\n");
+    if (std.mem.startsWith(u8, trimmed, "http://") or std.mem.startsWith(u8, trimmed, "https://")) {
+        if (std.mem.indexOfAny(u8, trimmed, " \t\r\n") == null) {
+            return importUrl(env, log, trimmed);
+        }
+    }
+    log.add("==> 解析剪贴板内容");
+    const r = try env.wsl.capture(env.arena, Wsl.net_distro, &.{ Wsl.agent_path, "node", "parse" }, text);
+    try importParsed(env, log, r);
+}
+
+pub fn importUrl(env: Env, log: *Log, url: []const u8) !void {
+    log.add("==> 经隧道下载订阅 不走 Windows 的真实网络");
+    const r = try env.wsl.capture(env.arena, Wsl.net_distro, &.{ Wsl.agent_path, "node", "parse", "--url", url }, null);
+    try importParsed(env, log, r);
+}
+
+fn importParsed(env: Env, log: *Log, r: anytype) !void {
+    if (!r.ok()) {
+        log.add(std.mem.trim(u8, r.stderr, " \r\n"));
+        return error.ParseFailed;
+    }
+    const p = try std.json.parseFromSliceLeaky(Parsed, env.arena, r.stdout, .{ .ignore_unknown_fields = true });
+    log.print("找到 {d} 个节点  不支持的协议 {d} 个  格式错误 {d} 个", .{ p.nodes.len, p.unsupported, p.invalid });
+    if (p.unsupported != 0) {
+        log.add("目前支持 vless hysteria2 tuic");
+    }
+    if (p.nodes.len == 0) {
+        return error.NoNodes;
+    }
+    var lines: std.Io.Writer.Allocating = .init(env.arena);
+    var cache: std.StringHashMapUnmanaged([]const u8) = .empty;
+    for (p.nodes) |n| {
+        const ip = cache.get(n.host) orelse blk: {
+            const v = pin(env, n.host) catch "";
+            try cache.put(env.arena, n.host, v);
+            break :blk v;
+        };
+        if (ip.len == 0) {
+            log.print("{s} 解析失败 {s}", .{ n.name, n.host });
+        }
+        try lines.writer.print("{s}\t{s}\n", .{ ip, n.link });
+    }
+    log.add("==> 保存节点 还没有在用的节点时启用第一个");
+    if (try env.wsl.exec(log, Wsl.net_distro, &.{ Wsl.agent_path, "node", "import", "--use-first" }, lines.written()) != 0) {
+        return error.ImportFailed;
+    }
+}
+
 pub fn remove(env: Env, log: *Log, id: []const u8) !void {
     if (try env.wsl.exec(log, Wsl.net_distro, &.{ Wsl.agent_path, "node", "remove", id }, null) != 0) {
         return error.RemoveNodeFailed;
