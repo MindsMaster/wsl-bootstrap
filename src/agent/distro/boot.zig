@@ -27,7 +27,7 @@ pub fn apply(gpa: Allocator, io: std.Io, env: *const std.process.Environ.Map) !O
         return .{ .foreign = name };
     }
     Guard.hardenSysctls(io);
-    _ = try Guard.enforce(gpa, &sock, cfg, null, null);
+    _ = try Guard.enforce(gpa, &sock, cfg, null, null, false);
 
     var nft: Nft = .init(gpa, io, env);
     if (!nft.available()) {

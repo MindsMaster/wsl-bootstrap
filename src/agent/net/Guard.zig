@@ -21,6 +21,7 @@ pub const State = struct {
     pid: i32 = 0,
     uplink: []const u8 = "",
     gateway: []const u8 = "",
+    network_mode: []const u8 = "",
     firewall: bool = false,
     node: []const u8 = "",
     singbox_restarts: u32 = 0,
@@ -51,6 +52,8 @@ firewall_ok: bool = false,
 firewall_check_ms: i64 = 0,
 nft_missing_logged: bool = false,
 uplink: ?lan.Uplink = null,
+mode: []const u8 = "",
+mode_buf: [16]u8 = undefined,
 child_pid: ?linux.pid_t = null,
 pidfd: i32 = -1,
 restart_at_ms: ?i64 = null,
@@ -120,7 +123,9 @@ pub fn firewallUp(gpa: Allocator, io: std.Io, env: *const std.process.Environ.Ma
         return error.ForeignKillswitch;
     }
     hardenSysctls(io);
-    _ = try enforce(gpa, &sock, cfg.value, if (node) |n| n.value.ipAddr() else null, null);
+    var mode_buf: [16]u8 = undefined;
+    const mode = lan.wslNetworkingMode(gpa, io, env, &mode_buf);
+    _ = try enforce(gpa, &sock, cfg.value, if (node) |n| n.value.ipAddr() else null, null, lan.modeAllowsUplink(mode));
 
     var nft: Nft = .init(gpa, io, env);
     if (!nft.available()) {
@@ -176,19 +181,19 @@ pub const Enforced = struct {
 
 /// 黑洞默认路由 节点直连路由 清除外来默认路由
 /// 先探测上行再删默认路由 实时默认路由是最好的上行线索
-pub fn enforce(gpa: Allocator, sock: *netlink.Socket, cfg: Config, node_ip: ?ip4.Addr, last: ?lan.Uplink) !Enforced {
+pub fn enforce(gpa: Allocator, sock: *netlink.Socket, cfg: Config, node_ip: ?ip4.Addr, last: ?lan.Uplink, find_uplink: bool) !Enforced {
     var snap = try lan.Snapshot.take(gpa, sock);
     defer snap.deinit();
     if (try ensureBlackhole(gpa, sock, &snap)) {
         snap.deinit();
         snap = try lan.Snapshot.take(gpa, sock);
     }
-    const up = try lan.detect(gpa, cfg, &snap, node_ip, last);
+    const up = if (find_uplink) try lan.detect(gpa, cfg, &snap, node_ip, last) else null;
     if (up) |u| {
         if (node_ip) |ip| {
             try ensureNodeRoute(sock, &snap, u, ip);
         }
-    } else if (node_ip != null) {
+    } else if (node_ip != null and find_uplink) {
         log.warn("找不到真实上行网卡", .{});
     }
     var removed: u32 = 0;
@@ -309,6 +314,10 @@ pub fn run(gpa: Allocator, io: std.Io, env: *const std.process.Environ.Map) !voi
     defer g.deinit();
     try fsx.ensureDir(io, paths.run);
     hardenSysctls(io);
+    g.mode = lan.wslNetworkingMode(gpa, io, env, &g.mode_buf);
+    if (!lan.modeAllowsUplink(g.mode)) {
+        log.err("WSL 网络模式是 {s} 不是 mirrored 不连节点 网络保持阻断", .{g.mode});
+    }
 
     var mask = signalMask();
     _ = linux.sigprocmask(linux.SIG.BLOCK, &mask, null);
@@ -580,7 +589,7 @@ fn reconcile(g: *Guard) !void {
         g.retreated = true;
         return;
     }
-    const res = try enforce(g.gpa, &g.sock, g.cfg.value, g.nodeIp(), g.uplink);
+    const res = try enforce(g.gpa, &g.sock, g.cfg.value, g.nodeIp(), g.uplink, lan.modeAllowsUplink(g.mode));
     g.state.reconciles += 1;
     g.state.routes_removed += res.removed;
 
@@ -698,6 +707,7 @@ fn writeState(g: *Guard) void {
     g.state.pid = g.child_pid orelse 0;
     g.state.firewall = g.firewall_ok;
     g.state.node = if (g.node) |n| n.value.ip else "";
+    g.state.network_mode = g.mode;
     g.state.paused = g.paused_until_ms != null;
     g.state.health_failures = g.health.failures;
     g.state.health_total_failures = g.health.total_failures;

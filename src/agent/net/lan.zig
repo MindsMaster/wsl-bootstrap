@@ -151,6 +151,23 @@ pub fn proxyTun(snap: *const Snapshot, index: u32) bool {
     return false;
 }
 
+/// 读不到为空 旧版 WSL 不支持查询
+pub fn wslNetworkingMode(gpa: Allocator, io: std.Io, env: *const std.process.Environ.Map, buf: []u8) []const u8 {
+    const path = env.get("WSLB_WSLINFO") orelse "/bin/wslinfo";
+    const r = std.process.run(gpa, io, .{ .argv = &.{ path, "--networking-mode" } }) catch return "";
+    defer gpa.free(r.stdout);
+    defer gpa.free(r.stderr);
+    if (r.term != .exited or r.term.exited != 0) {
+        return "";
+    }
+    return std.fmt.bufPrint(buf, "{s}", .{std.mem.trim(u8, r.stdout, " \r\n")}) catch "";
+}
+
+/// nat 下到节点的连接走 Windows 路由表 会被 Windows 侧代理和 VPN 改道
+pub fn modeAllowsUplink(mode: []const u8) bool {
+    return mode.len == 0 or std.mem.eql(u8, mode, "mirrored");
+}
+
 /// mirrored 模式给每块网卡加一条到 Windows 网关的主机路由 默认路由被清掉后它还在
 pub fn gatewayHint(snap: *const Snapshot, index: u32) ?struct { gw: ip4.Addr, metric: u32 } {
     const own = snap.firstCidr(index) orelse return null;

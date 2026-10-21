@@ -242,6 +242,30 @@ check "换回原节点" wait_for 3000 node_via 10.77.0.1 lan1
 "$BIN" config set lan-cidr 192.168.50.0/24 >/dev/null
 "$BIN" config set lan-gateway 192.168.50.1 >/dev/null
 
+echo "WSL 退回 nat 网络模式 不连节点"
+singbox_stopped() { ! singbox_running; }
+kill -TERM "$DAEMON"
+wait "$DAEMON" || true
+printf '#!/bin/sh\necho nat\n' >"$WORK/wslinfo-nat"
+chmod +x "$WORK/wslinfo-nat"
+ip route del "$NODE/32"
+WSLB_WSLINFO=$WORK/wslinfo-nat "$BIN" guard 2>>"$WORK/daemon.log" &
+DAEMON=$!
+check "守护进程可达" wait_for 3000 guard_alive
+ip route add default via 10.77.0.1 dev lan1 metric 10
+check "WSL 注入的默认路由被清除" wait_for 1000 only_blackhole_default
+sleep 1
+check "不固定节点路由" bash -c "! ip -4 route show $NODE/32 | grep -q via"
+check "不启动 sing-box" singbox_stopped
+check "防火墙完整规则仍在" table_owner guard
+check "状态里报告 nat" bash -c "WSLB_WSLINFO=$WORK/wslinfo-nat \"$BIN\" status --json | grep -q '\"network_mode\": \"nat\"'"
+kill -TERM "$DAEMON"
+wait "$DAEMON" || true
+"$BIN" guard 2>>"$WORK/daemon.log" &
+DAEMON=$!
+check "读不到网络模式时照常连节点" wait_for 3000 node_via 10.77.0.1 lan1
+check "sing-box 在运行" wait_for 3000 singbox_running
+
 echo "防火墙被删或被换"
 "$NFT" delete table inet wslb
 if wait_for 2000 table_owner guard; then ok "被删的防火墙表 ${ELAPSED}ms 内恢复"; else bad "防火墙表未恢复"; fi

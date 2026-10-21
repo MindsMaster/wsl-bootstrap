@@ -114,6 +114,8 @@ fn status(c: *Cli, _: []const [:0]const u8) !Exit {
         break :blk if (o) |x| @tagName(x) else "none";
     };
     const protected = foreign_ks != null or (blackhole and foreign_routes == 0);
+    var mode_buf: [16]u8 = undefined;
+    const mode = lan.wslNetworkingMode(c.gpa, c.io, c.env, &mode_buf);
 
     if (c.json) {
         try c.writeJson(.{
@@ -131,6 +133,7 @@ fn status(c: *Cli, _: []const [:0]const u8) !Exit {
             .node_route = node_route,
             .tun = tun_up,
             .uplink = if (state) |s| s.uplink else "",
+            .network_mode = mode,
             .singbox_pid = if (state) |s| s.pid else 0,
             .paused = if (state) |s| s.paused else false,
             .health_failures = if (state) |s| s.health_failures else 0,
@@ -144,6 +147,9 @@ fn status(c: *Cli, _: []const [:0]const u8) !Exit {
         try c.warn("另一套 kill-switch 正在管理网络 网卡 {s}", .{name});
         try c.out.writeAll("    wslb 不会改动任何网络状态 两套同时运行会互相破坏\n");
         return .ok;
+    }
+    if (!lan.modeAllowsUplink(mode)) {
+        try c.bad("WSL 网络模式是 {s} 需要 mirrored 不连节点", .{mode});
     }
     if (state) |s| {
         try c.ok("守护进程运行中  上行 {s} via {s}", .{ s.uplink, s.gateway });
