@@ -31,12 +31,19 @@ pub const NetStatus = struct {
     node_route: bool = false,
     tun: bool = false,
     uplink: []const u8 = "",
+    /// 旧版 agent 或读不到时为空
+    network_mode: []const u8 = "",
     singbox_pid: i32 = 0,
     paused: bool = false,
     health_failures: u32 = 0,
     health_restarts: u32 = 0,
     health_ok_age_s: i64 = -1,
 };
+
+/// 与 agent lan.zig 的 modeAllowsUplink 一致
+pub fn modeAllowsUplink(st: NetStatus) bool {
+    return st.network_mode.len == 0 or std.mem.eql(u8, st.network_mode, "mirrored");
+}
 
 /// 网络发行版没装时返回 null 它是整个 VM 网络状态的观察点
 pub fn netStatus(env: Env) !?NetStatus {

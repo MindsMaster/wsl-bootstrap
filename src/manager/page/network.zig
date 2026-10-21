@@ -7,6 +7,7 @@ const Log = @import("../Log.zig");
 const Menu = @import("../ui/Menu.zig");
 const Screen = @import("../term/Screen.zig");
 const Wsl = @import("../Wsl.zig");
+const ini = @import("ini");
 const netdistro = @import("../job/netdistro.zig");
 const winsys = @import("../winsys.zig");
 
@@ -55,6 +56,9 @@ pub fn draw(app: *App, s: *Screen) usize {
         }
         y += 2;
     }
+    if (!Env.modeAllowsUplink(st)) {
+        y = drawNotMirrored(info, s, y, st.network_mode);
+    }
     if (st.node.len != 0) {
         const nx = s.put(2, y, "节点", .muted);
         _ = s.print(nx + 2, y, .normal, "{s}  {s}:{d} → {s}", .{ st.node_name, st.node_host, st.node_port, st.node });
@@ -67,6 +71,35 @@ pub fn draw(app: *App, s: *Screen) usize {
         y += 1;
     }
     return y;
+}
+
+const ipv6_fix = "Remove-ItemProperty HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip6\\Parameters -Name DisabledComponents";
+
+/// 原因按 WSL 退回 nat 的判断顺序
+fn drawNotMirrored(info: *const App.Info, s: *Screen, y0: usize, mode: []const u8) usize {
+    var y = y0;
+    _ = s.print(2, y, .bad, "{s} WSL 网络模式是 {s} 不是 mirrored 不连节点", .{ Screen.glyph.cross, mode });
+    y += 1;
+    const want = ini.get(info.wslconfig, "wsl2", "networkingMode") orelse "";
+    const firewall = ini.get(info.wslconfig, "wsl2", "firewall") orelse "";
+    // WSL 只拒绝 0xff 这一个值
+    const reason: []const u8, const action: []const u8, const command: []const u8 = if (!std.ascii.eqlIgnoreCase(want, "mirrored"))
+        .{ ".wslconfig 没有启用 mirrored", "在 WSL 页编辑 .wslconfig 打开 mirrored 网络 再关闭全部 WSL", "" }
+    else if (info.ipv6_disabled_components == 0xff)
+        .{ "Windows 在注册表里禁用了 IPv6 DisabledComponents=0xff", "在管理员 PowerShell 执行下面这行 然后重启 Windows", ipv6_fix }
+    else if (std.ascii.eqlIgnoreCase(firewall, "false"))
+        .{ ".wslconfig 里 firewall=false mirrored 需要 Hyper-V 防火墙", "删掉 [wsl2] 下的 firewall=false 再关闭全部 WSL", "" }
+    else
+        .{ ".wslconfig 已启用 mirrored 可能改完还没重启 WSL", "在 WSL 页关闭全部 WSL 再打开 仍不行就在终端执行 wsl 看退回 nat 的原因", "" };
+    _ = s.put(4, y, reason, .muted);
+    y += 1;
+    _ = s.put(4, y, action, .muted);
+    y += 1;
+    if (command.len != 0) {
+        _ = s.put(6, y, command, .strong);
+        y += 1;
+    }
+    return y + 1;
 }
 
 pub fn items(app: *App, a: std.mem.Allocator) ![]const Menu.Item {

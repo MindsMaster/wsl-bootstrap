@@ -55,6 +55,8 @@ pub const Info = struct {
     lans: []Env.LanEntry = &.{},
     net_error: []const u8 = "",
     autostart: bool = false,
+    /// 只在网络模式不是 mirrored 时读取
+    ipv6_disabled_components: ?u32 = null,
     wslconfig_path: []const u8 = "",
     wslconfig: []const u8 = "",
     gpu: []const u8 = "",
@@ -356,6 +358,11 @@ fn loadInfo(env: Env, log: *Log, info: *Info, win_env: *const std.process.Enviro
         info.nodes = sub.nodeList() catch &.{};
         info.subs = sub.subList() catch &.{};
         info.lans = sub.lanList() catch &.{};
+    }
+    if (info.net) |st| {
+        if (!Env.modeAllowsUplink(st)) {
+            info.ipv6_disabled_components = winsys.ipv6DisabledComponents(env.wsl.runner, a);
+        }
     }
     info.autostart = winsys.autostartEnabled(env.wsl.runner, a);
     info.wslconfig_path = wslconfig.path(a, win_env) catch "";

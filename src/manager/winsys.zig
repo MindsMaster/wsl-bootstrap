@@ -185,6 +185,32 @@ pub fn autostartEnabled(runner: Runner, a: Allocator) bool {
     return r.ok();
 }
 
+const tcpip6_key = "HKLM\\SYSTEM\\CurrentControlSet\\Services\\Tcpip6\\Parameters";
+
+/// 没有这个值时返回 null
+pub fn ipv6DisabledComponents(runner: Runner, a: Allocator) ?u32 {
+    const r = runner.run(a, &.{ "reg.exe", "query", tcpip6_key, "/v", "DisabledComponents" }, null) catch return null;
+    if (!r.ok()) {
+        return null;
+    }
+    return parseRegDword(r.stdout);
+}
+
+/// reg query 输出的最后一列 如 0xff
+fn parseRegDword(text: []const u8) ?u32 {
+    var tokens = std.mem.tokenizeAny(u8, text, " \t\r\n");
+    var last: []const u8 = "";
+    while (tokens.next()) |t| {
+        last = t;
+    }
+    return std.fmt.parseInt(u32, last, 0) catch null;
+}
+
+test "reg dword" {
+    try std.testing.expectEqual(@as(?u32, 0xff), parseRegDword("\r\nHKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Services\\Tcpip6\\Parameters\r\n    DisabledComponents    REG_DWORD    0xff\r\n\r\n"));
+    try std.testing.expectEqual(@as(?u32, null), parseRegDword(""));
+}
+
 test "mnt path" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
