@@ -93,6 +93,7 @@ test {
     _ = @import("Runner.zig");
     _ = @import("Wsl.zig");
     _ = @import("job/create.zig");
+    _ = @import("page/about.zig");
     _ = @import("term/Screen.zig");
     _ = @import("term/keys.zig");
     _ = @import("ui/Form.zig");

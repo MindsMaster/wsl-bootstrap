@@ -1,4 +1,5 @@
 const std = @import("std");
+const build_options = @import("build_options");
 const Env = @import("job/Env.zig");
 const Form = @import("ui/Form.zig");
 const Key = @import("term/keys.zig").Key;
@@ -8,6 +9,7 @@ const Runner = @import("Runner.zig");
 const Screen = @import("term/Screen.zig");
 const Wsl = @import("Wsl.zig");
 const page_distro = @import("page/distro.zig");
+const page_about = @import("page/about.zig");
 const page_distros = @import("page/distros.zig");
 const page_network = @import("page/network.zig");
 const page_nodes = @import("page/nodes.zig");
@@ -18,7 +20,7 @@ const wslconfig = @import("wslconfig.zig");
 const App = @This();
 const Allocator = std.mem.Allocator;
 
-pub const Tab = enum { wsl, network, distros };
+pub const Tab = enum { wsl, network, distros, about };
 
 /// 当前显示哪一页 只在这里分发绘制和按键
 pub const Page = union(enum) {
@@ -27,6 +29,7 @@ pub const Page = union(enum) {
     distros,
     distro: []const u8,
     nodes,
+    about,
 };
 
 pub const DistroDetail = struct {
@@ -61,6 +64,8 @@ pub const Info = struct {
     wslconfig: []const u8 = "",
     gpu: []const u8 = "",
     detail: ?DistroDetail = null,
+    /// 这次刷新没查更新时为 null 查不到为空
+    latest: ?[]const u8 = null,
 };
 
 pub const Job = struct {
@@ -115,7 +120,7 @@ tab: Tab = .wsl,
 detail: ?[]const u8 = null,
 detail_buf: [64]u8 = undefined,
 /// 每页各自记住选中项 下标同 Page 的 tag
-cursors: [5]usize = .{ 0, 0, 0, 0, 0 },
+cursors: [6]usize = .{ 0, 0, 0, 0, 0, 0 },
 /// 网络页下的节点列表
 nodes_open: bool = false,
 /// 0 是手动导入 其余是 info.subs 的下标加一
@@ -140,6 +145,11 @@ netdistro: []const u8,
 log_scroll: usize = 0,
 /// 运行中的任务在日志页按过一次 Esc 再按一次才取消
 cancel_armed: bool = false,
+/// 下一次刷新顺带查更新 启动时查一次
+check_update: bool = true,
+update: enum { unknown, failed, latest, newer } = .unknown,
+latest_buf: [32]u8 = undefined,
+latest: []const u8 = "",
 
 pub fn init(gpa: Allocator, io: std.Io, env: *const std.process.Environ.Map, runner: Runner, agent: []const u8, netdistro: []const u8) !App {
     const info = try gpa.create(Info);
@@ -188,6 +198,7 @@ pub fn page(app: *const App) Page {
         .wsl => .wsl,
         .network => .network,
         .distros => .distros,
+        .about => .about,
     };
 }
 
@@ -318,6 +329,10 @@ fn reapJob(app: *App) void {
         t.join();
     }
     if (job.info) |fresh| {
+        if (fresh.latest) |v| {
+            app.latest = std.fmt.bufPrint(&app.latest_buf, "{s}", .{v}) catch "";
+            app.update = if (app.latest.len == 0) .failed else if (page_about.isNewer(app.latest, build_options.version)) .newer else .latest;
+        }
         app.info.arena.deinit();
         app.gpa.destroy(app.info);
         app.info = fresh;
@@ -340,10 +355,11 @@ pub fn refresh(app: *App) void {
     fresh.* = .{ .arena = .init(app.gpa) };
     job.info = fresh;
     const detail: ?[]const u8 = if (app.detail) |n| job.arena.allocator().dupe(u8, n) catch null else null;
-    app.runJob(job, loadInfo, .{ fresh, app.env, detail });
+    app.runJob(job, loadInfo, .{ fresh, app.env, detail, app.check_update });
+    app.check_update = false;
 }
 
-fn loadInfo(env: Env, log: *Log, info: *Info, win_env: *const std.process.Environ.Map, detail: ?[]const u8) !void {
+fn loadInfo(env: Env, log: *Log, info: *Info, win_env: *const std.process.Environ.Map, detail: ?[]const u8, check_update: bool) !void {
     _ = log;
     const a = info.arena.allocator();
     var sub = env;
@@ -370,6 +386,9 @@ fn loadInfo(env: Env, log: *Log, info: *Info, win_env: *const std.process.Enviro
         info.wslconfig = wslconfig.read(env.io, a, info.wslconfig_path) catch "";
     }
     info.gpu = winsys.gpuNames(env.wsl.runner, a);
+    if (check_update) {
+        info.latest = page_about.latestVersion(env.wsl.runner, a);
+    }
     if (detail) |name| {
         info.detail = page_distro.load(sub, try a.dupe(u8, name));
     }
@@ -474,6 +493,7 @@ pub fn key(app: *App, k: Key) void {
             '1' => return app.setTab(.wsl),
             '2' => return app.setTab(.network),
             '3' => return app.setTab(.distros),
+            '4' => return app.setTab(.about),
             else => {},
         },
         else => {},
@@ -579,6 +599,7 @@ fn pageItems(app: *App) []const Menu.Item {
         .distros => page_distros.items(app, a),
         .distro => |name| page_distro.items(app, a, name),
         .nodes => page_nodes.items(app, a),
+        .about => page_about.items(app, a),
     } catch &.{};
 }
 
@@ -639,6 +660,7 @@ fn drawHeader(app: *App) void {
             .wsl => " WSL ",
             .network => " 网络 ",
             .distros => " 发行版 ",
+            .about => " 关于 ",
         };
         const current = t == app.tab;
         const sub = app.detail != null or app.nodes_open;
@@ -649,6 +671,11 @@ fn drawHeader(app: *App) void {
     }
     if (app.nodes_open) {
         _ = s.put(x, 0, "› 节点", .strong);
+    }
+    if (!app.busy() and app.update == .newer) {
+        var buf: [64]u8 = undefined;
+        const text = std.fmt.bufPrint(&buf, "有新版本 {s}  4 查看", .{app.latest}) catch "";
+        _ = s.put(@as(usize, s.width) -| (Screen.textWidth(text) + 2), 0, text, .warn);
     }
     if (app.busy()) {
         const job = app.job.?;
@@ -675,6 +702,7 @@ fn drawPage(app: *App, desc: *[]const u8) []const u8 {
         .distros => page_distros.draw(app, s),
         .distro => |name| page_distro.draw(app, s, name),
         .nodes => page_nodes.draw(app, s),
+        .about => page_about.draw(app, s),
     };
     const items = app.pageItems();
     const cur = app.cursor();

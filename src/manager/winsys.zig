@@ -98,6 +98,20 @@ pub fn openShell(a: Allocator, distro: []const u8) !void {
     }
 }
 
+/// 网址和 mailto 交给系统默认程序
+pub fn openUrl(a: Allocator, url: []const u8) !void {
+    if (!is_windows) {
+        return error.Unsupported;
+    }
+    var info: win.ShellExecuteInfo = .{
+        .verb = try wide(a, "open"),
+        .file = try wide(a, url),
+    };
+    if (win.ShellExecuteExW(&info) == .FALSE) {
+        return error.LaunchFailed;
+    }
+}
+
 /// 剪贴板里的文字 没有文字时返回空
 pub fn clipboardText(a: Allocator) ![]const u8 {
     if (!is_windows) {
