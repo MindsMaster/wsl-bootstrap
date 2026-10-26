@@ -137,3 +137,9 @@ src/manager/
 tools/                        打包脚本
 tests/                        集成测试
 ```
+
+## 许可证
+
+[AGPL-3.0](LICENSE)。作者 an5w1r@163.com，QQ 群 1046048297。
+
+`wslb.exe` 里打包的网络发行版带有 sing-box（GPL-3.0）和 Alpine 的软件包，它们各自沿用原来的许可证，版本记在 `wslb-net.lock`。
