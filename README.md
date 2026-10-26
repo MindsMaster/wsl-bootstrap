@@ -86,7 +86,7 @@ zig build test                      # 单元测试
 tools/release.sh 0.2.0              # 打网络发行版并编进 dist/wslb-0.2.0.exe
 ```
 
-推送 `v` 开头的标签，比如 `v0.2.1`，GitHub Actions 会跑同一个 `tools/release.sh`，把 exe 和校验文件发到 Release。在 Actions 页手动运行时只编译，产物在运行记录的 Artifacts 里。
+在 GitHub 网页上发布 Release，标签用 `v` 开头，比如 `v0.2.1`。发布后 GitHub Actions 会跑同一个 `tools/release.sh`，把 exe 和校验文件传到这个 Release。在 Actions 页手动运行时只编译，产物在运行记录的 Artifacts 里。
 
 `tools/build-netdistro.sh` 的取材：
 - minirootfs 与 nftables 从 Alpine 官方源下载；

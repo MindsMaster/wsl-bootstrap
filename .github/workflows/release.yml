@@ -1,8 +1,8 @@
 name: release
 
 on:
-  push:
-    tags: ["v*"]
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       version:
@@ -29,7 +29,8 @@ jobs:
       - name: 版本号
         env:
           INPUT_VERSION: ${{ inputs.version }}
-        run: echo "VERSION=${INPUT_VERSION:-${GITHUB_REF_NAME#v}}" >>"$GITHUB_ENV"
+          TAG: ${{ github.event.release.tag_name }}
+        run: echo "VERSION=${INPUT_VERSION:-${TAG#v}}" >>"$GITHUB_ENV"
 
       - name: 格式与单元测试
         run: |
@@ -47,11 +48,11 @@ jobs:
             dist/wslb-${{ env.VERSION }}.exe.sha256
             dist/wslb-net.lock
 
-      - name: 发布 Release
-        if: github.event_name == 'push'
+      - name: 上传到 Release
+        if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            "dist/wslb-$VERSION.exe" "dist/wslb-$VERSION.exe.sha256" "dist/wslb-net.lock" \
-            --title "wslb $VERSION" --generate-notes --verify-tag
+          gh release upload "$TAG" --clobber \
+            "dist/wslb-$VERSION.exe" "dist/wslb-$VERSION.exe.sha256" "dist/wslb-net.lock"
