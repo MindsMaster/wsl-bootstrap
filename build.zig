@@ -50,6 +50,16 @@ pub fn build(b: *std.Build) void {
     if (netdistro) |p| {
         manager_mod.addAnonymousImport("netdistro", .{ .root_source_file = b.path(p) });
     }
+    const sem = std.SemanticVersion.parse(version) catch @panic("version 须为 x.y.z");
+    manager_mod.addWin32ResourceFile(.{
+        .file = b.path("src/manager/wslb.rc"),
+        .flags = &.{
+            b.fmt("/dVER_MAJOR={d}", .{sem.major}),
+            b.fmt("/dVER_MINOR={d}", .{sem.minor}),
+            b.fmt("/dVER_PATCH={d}", .{sem.patch}),
+            b.fmt("/dVER_STR=\"{s}\"", .{version}),
+        },
+    });
     const manager = b.addExecutable(.{ .name = "wslb", .root_module = manager_mod });
     b.installArtifact(manager);
 

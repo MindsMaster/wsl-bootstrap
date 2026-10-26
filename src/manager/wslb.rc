@@ -1,0 +1,27 @@
+#pragma code_page(65001)
+
+1 VERSIONINFO
+FILEVERSION VER_MAJOR, VER_MINOR, VER_PATCH, 0
+PRODUCTVERSION VER_MAJOR, VER_MINOR, VER_PATCH, 0
+FILEOS 0x40004
+FILETYPE 0x1
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "080404B0"
+        BEGIN
+            VALUE "CompanyName", "an5w1r@163.com"
+            VALUE "FileDescription", "wslb WSL 管理器"
+            VALUE "FileVersion", VER_STR
+            VALUE "InternalName", "wslb"
+            VALUE "LegalCopyright", "Copyright (C) 2026 an5w1r@163.com"
+            VALUE "OriginalFilename", "wslb.exe"
+            VALUE "ProductName", "wslb"
+            VALUE "ProductVersion", VER_STR
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x804, 1200
+    END
+END
