@@ -24,7 +24,7 @@ if [[ $(readlink /proc/self/ns/net) == "$WSLB_TEST_HOST_NS" ]]; then
   echo "仍在宿主网络命名空间 中止" >&2
   exit 99
 fi
-for name in seattle0 seattle-null wslb0 wslb-null; do
+for name in wslb0 wslb-null; do
   if ip link show "$name" >/dev/null 2>&1; then
     echo "命名空间里出现 $name 中止" >&2
     exit 99
@@ -83,7 +83,6 @@ pid_changed() { local p; p=$(singbox_pid); [[ -n $p && $p != 0 && $p != "$1" ]];
 guard_alive() { local s; s=$("$BIN" status --json 2>/dev/null) || true; [[ $s == *'"guard": true'* ]]; }
 guard_gone() { ! guard_alive; }
 state_field() { "$BIN" status --json | python3 -c "import json,sys; print(json.load(sys.stdin)['$1'])"; }
-routes_snapshot() { ip -4 route show table main; ip -br link | awk '{print $1}' | sort; }
 
 ip link set lo up
 ip link add lan0 type dummy
@@ -106,21 +105,6 @@ EOF
 cat >"$WSLB_ETC/node.json" <<EOF
 { "name": "test", "host": "$NODE", "ip": "$NODE", "port": 443, "uuid": "u-1", "security": "tls", "fingerprint": "chrome" }
 EOF
-
-echo "另一套 kill-switch 在场"
-ip link add seattle-null type dummy
-ip link set seattle-null up
-ip link add seattle0 type dummy
-ip route replace default dev seattle-null
-before=$(routes_snapshot)
-if "$BIN" firewall-up 2>/dev/null; then bad "firewall-up 没有拒绝"; else ok "firewall-up 拒绝改动"; fi
-if "$BIN" guard 2>/dev/null; then bad "守护进程没有拒绝启动"; else ok "守护进程拒绝启动"; fi
-check "开机兜底识别出外部 kill-switch" bash -c "\"$BIN\" boot | grep -q seattle"
-check "路由与网卡没有任何变化" test "$before" == "$(routes_snapshot)"
-check "没有建立防火墙表" no_table
-ip link del seattle0
-ip link del seattle-null
-ip route replace default via 192.168.50.1 dev lan0 metric 100
 
 echo "用户发行版开机兜底 守护进程未运行"
 "$BIN" boot >/dev/null
@@ -348,42 +332,6 @@ check "停用状态下 start 不拉起" guard_gone
 "$BIN" enable >/dev/null
 check "enable 后守护进程恢复" wait_for 3000 guard_alive
 check "enable 后防火墙恢复" wait_for 3000 table_owner guard
-
-echo "另一套 kill-switch 后启动 守护进程让出"
-seattle_up() {
-  ip link add seattle-null type dummy
-  ip link set seattle-null up
-  ip link add seattle0 type dummy
-  ip route replace default dev seattle-null metric 5
-}
-seattle_down() {
-  ip link del seattle0
-  ip link del seattle-null
-}
-retreated() { no_table && ! ip -4 route show default | grep -q wslb-null; }
-seattle_route_kept() { ip -4 route show default | grep -q 'dev seattle-null'; }
-check "守护进程在运行" guard_alive
-seattle_up
-if wait_for 1500 retreated; then ok "${ELAPSED}ms 内删掉 wslb 表和黑洞默认路由"; else bad "守护进程没有让出"; fi
-check "守护进程退出" wait_for 2000 guard_gone
-check "seattle 的默认路由保留" seattle_route_kept
-"$BIN" start >/dev/null
-sleep 1
-check "seattle 在时 start 不拉起守护进程" guard_gone
-
-echo "另一套 kill-switch 后启动 开机兜底让出"
-seattle_down
-"$BIN" boot >/dev/null
-check "兜底层已建立" table_owner boot
-printf '{ "wsl_exe": "/bin/false", "net_distro": "wslb-net" }\n' >"$WSLB_ETC/distro.json"
-"$BIN" link 2>"$WORK/link.log" &
-LINK=$!
-sleep 1
-seattle_up
-if wait_for 8000 retreated; then ok "link ${ELAPSED}ms 内拆掉兜底表和黑洞默认路由"; else bad "link 没有拆掉兜底"; fi
-check "seattle 的默认路由保留" seattle_route_kept
-kill "$LINK"
-wait "$LINK" 2>/dev/null || true
 
 echo
 if (( FAIL > 0 )); then

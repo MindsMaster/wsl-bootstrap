@@ -303,8 +303,8 @@ pub fn save(n: Node, io: std.Io, gpa: Allocator, path: []const u8) !void {
 test "tls link" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
-    const n = try parseLink(arena.allocator(), "vless://1111-2222@us1.example.com:37670?encryption=none&security=tls&sni=us1.example.com&alpn=h2%2Chttp%2F1.1&type=tcp#Seattle%20Node");
-    try std.testing.expectEqualStrings("Seattle Node", n.name);
+    const n = try parseLink(arena.allocator(), "vless://1111-2222@us1.example.com:37670?encryption=none&security=tls&sni=us1.example.com&alpn=h2%2Chttp%2F1.1&type=tcp#Test%20Node");
+    try std.testing.expectEqualStrings("Test Node", n.name);
     try std.testing.expectEqual(@as(u16, 37670), n.port);
     try std.testing.expectEqual(Security.tls, n.security);
     try std.testing.expectEqualStrings("chrome", n.fingerprint);

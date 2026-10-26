@@ -69,8 +69,8 @@ fn defaultUser(ctx: *Ctx) ![]const u8 {
 
 /// 联网前的防护检查 不通过就拒绝 不让 apt 直连
 fn requireProtection(c: *Cli) bool {
-    _ = provision.protection(c.gpa) catch {
-        c.err.writeAll("wslb-agent: 网络未受保护 网络发行版未运行且没有其他 kill-switch 拒绝联网\n") catch {};
+    provision.protection() catch {
+        c.err.writeAll("wslb-agent: 网络未受保护 网络发行版的守护进程未运行 拒绝联网\n") catch {};
         return false;
     };
     return true;
@@ -254,23 +254,20 @@ fn saveConfig(c: *Cli, cfg: Config) !void {
 }
 
 fn bootCmd(c: *Cli, _: []const [:0]const u8) !Exit {
-    const outcome = try boot.apply(c.gpa, c.io, c.env);
-    switch (outcome) {
-        .foreign => |name| try c.warn("另一套 kill-switch {s} 在管理网络 不做改动", .{name}),
-        .applied => |a| if (a.guard) {
-            try c.ok("黑洞路由已确认 守护进程的完整规则已在", .{});
-        } else if (a.firewall) {
-            try c.ok("已加载开机兜底 黑洞路由与防火墙", .{});
-        } else {
-            try c.warn("已加载黑洞路由 找不到 nft 没有防火墙层", .{});
-        },
+    const a = try boot.apply(c.gpa, c.io, c.env);
+    if (a.guard) {
+        try c.ok("黑洞路由已确认 守护进程的完整规则已在", .{});
+    } else if (a.firewall) {
+        try c.ok("已加载开机兜底 黑洞路由与防火墙", .{});
+    } else {
+        try c.warn("已加载黑洞路由 找不到 nft 没有防火墙层", .{});
     }
     return .ok;
 }
 
 fn linkCmd(c: *Cli, _: []const [:0]const u8) !Exit {
     const cfg = try loadConfig(c);
-    try boot.link(c.gpa, c.io, c.env, cfg.wsl_exe, cfg.net_distro);
+    try boot.link(c.io, cfg.wsl_exe, cfg.net_distro);
     return .ok;
 }
 

@@ -61,7 +61,6 @@ paused_until_ms: ?i64 = null,
 backoff_ms: i64 = 1000,
 started_ms: i64 = 0,
 quit: bool = false,
-retreated: bool = false,
 state: State = .{},
 gw_buf: [16]u8 = undefined,
 /// state 里的字符串要比 uplink 活得久
@@ -101,13 +100,6 @@ fn nodeIp(g: *const Guard) ?ip4.Addr {
     return n.value.ipAddr();
 }
 
-/// 有另一套 kill-switch 时返回它的网卡名 调用方不得改动任何网络状态
-pub fn foreignPresent(gpa: Allocator, sock: *netlink.Socket, cfg: Config) !?[]const u8 {
-    var snap = try lan.Snapshot.take(gpa, sock);
-    defer snap.deinit();
-    return lan.foreign(cfg, &snap);
-}
-
 /// 网络发行版开机早期用 只加载防火墙和黑洞默认路由 不需要节点在线
 pub fn firewallUp(gpa: Allocator, io: std.Io, env: *const std.process.Environ.Map) !void {
     const paths = Paths.fromEnv(env);
@@ -118,10 +110,6 @@ pub fn firewallUp(gpa: Allocator, io: std.Io, env: *const std.process.Environ.Ma
 
     var sock = try netlink.Socket.open(0);
     defer sock.close();
-    if (try foreignPresent(gpa, &sock, cfg.value)) |name| {
-        log.err("检测到另一套 kill-switch 的网卡 {s} 不做任何改动", .{name});
-        return error.ForeignKillswitch;
-    }
     hardenSysctls(io);
     var mode_buf: [16]u8 = undefined;
     const mode = lan.wslNetworkingMode(gpa, io, env, &mode_buf);
@@ -136,22 +124,6 @@ pub fn firewallUp(gpa: Allocator, io: std.Io, env: *const std.process.Environ.Ma
         log.err("防火墙加载失败 {s}", .{nft.lastError()});
         return err;
     };
-}
-
-/// 另一套 kill-switch 出现后让出网络 删掉 wslb 表和黑洞默认路由 不碰它的路由
-pub fn retreat(gpa: Allocator, io: std.Io, env: *const std.process.Environ.Map, sock: *netlink.Socket) void {
-    var nft: Nft = .init(gpa, io, env);
-    if (nft.available()) {
-        nft.exec("delete table " ++ firewall.table ++ "\n") catch {};
-    }
-    var snap = lan.Snapshot.take(gpa, sock) catch return;
-    defer snap.deinit();
-    const null_link = snap.linkByName(lan.null_if) orelse return;
-    for (snap.routes) |r| {
-        if (r.table == netlink.TABLE_MAIN and r.isDefault() and r.oif == null_link.index) {
-            sock.routeDelete(r) catch {};
-        }
-    }
 }
 
 pub fn allowOf(cfg: Config, node_ip: ?[]const u8) firewall.Allow {
@@ -280,10 +252,6 @@ pub fn run(gpa: Allocator, io: std.Io, env: *const std.process.Environ.Map) !voi
     errdefer cfg.deinit();
     var sock = try netlink.Socket.open(0);
     errdefer sock.close();
-    if (try foreignPresent(gpa, &sock, cfg.value)) |name| {
-        log.err("检测到另一套 kill-switch 的网卡 {s} 拒绝启动", .{name});
-        return error.ForeignKillswitch;
-    }
     const control = Control.Server.open() catch |err| switch (err) {
         error.AlreadyRunning => {
             const uid = Control.holderUid() orelse 0;
@@ -389,9 +357,7 @@ pub fn run(gpa: Allocator, io: std.Io, env: *const std.process.Environ.Map) !voi
             }
         }
         if (g.quit) {
-            if (!g.retreated) {
-                log.info("按请求退出 防火墙与黑洞保留", .{});
-            }
+            log.info("按请求退出 防火墙与黑洞保留", .{});
             g.stopSingbox();
             return;
         }
@@ -579,14 +545,6 @@ fn handleRequest(g: *Guard, conn: Control.Conn, req: []const u8) void {
 
 fn reconcile(g: *Guard) !void {
     if (g.quit) {
-        return;
-    }
-    if (try foreignPresent(g.gpa, &g.sock, g.cfg.value)) |name| {
-        log.warn("另一套 kill-switch 的网卡 {s} 出现 让出网络并退出", .{name});
-        g.stopSingbox();
-        retreat(g.gpa, g.io, g.env, &g.sock);
-        g.quit = true;
-        g.retreated = true;
         return;
     }
     const res = try enforce(g.gpa, &g.sock, g.cfg.value, g.nodeIp(), g.uplink, lan.modeAllowsUplink(g.mode));

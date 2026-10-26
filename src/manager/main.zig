@@ -80,7 +80,7 @@ fn status(app: *App, out: *std.Io.Writer) !u8 {
         try out.print("{s} {s:<24} {s}\n", .{ if (d.default) "*" else " ", d.name, @tagName(d.state) });
     }
     if (info.net) |n| {
-        try out.print("网络 protected={} guard={} foreign={s} node={s}\n", .{ n.protected, n.guard, n.foreign_killswitch, n.node });
+        try out.print("网络 protected={} guard={} node={s}\n", .{ n.protected, n.guard, n.node });
     } else {
         try out.writeAll("网络发行版未安装\n");
     }

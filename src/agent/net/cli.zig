@@ -73,7 +73,6 @@ fn notifyGuard(c: *Cli) !void {
 }
 
 fn status(c: *Cli, _: []const [:0]const u8) !Exit {
-    const cfg = try loadConfig(c);
     const state = guardState(c);
     const local_node = loadNode(c);
     const node_ip_text: []const u8 = if (local_node) |n| n.ip else if (state) |s| s.node else "";
@@ -83,7 +82,6 @@ fn status(c: *Cli, _: []const [:0]const u8) !Exit {
     defer sock.close();
     var snap = try lan.Snapshot.take(c.gpa, &sock);
     defer snap.deinit();
-    const foreign_ks = lan.foreign(cfg, &snap);
     const null_link = snap.linkByName(lan.null_if);
     var blackhole = false;
     var foreign_routes: usize = 0;
@@ -113,7 +111,7 @@ fn status(c: *Cli, _: []const [:0]const u8) !Exit {
         };
         break :blk if (o) |x| @tagName(x) else "none";
     };
-    const protected = foreign_ks != null or (blackhole and foreign_routes == 0);
+    const protected = blackhole and foreign_routes == 0;
     var mode_buf: [16]u8 = undefined;
     const mode = lan.wslNetworkingMode(c.gpa, c.io, c.env, &mode_buf);
 
@@ -121,7 +119,6 @@ fn status(c: *Cli, _: []const [:0]const u8) !Exit {
         try c.writeJson(.{
             .version = build_options.version,
             .protected = protected,
-            .foreign_killswitch = foreign_ks orelse "",
             .guard = state != null,
             .firewall = owner,
             .blackhole = blackhole,
@@ -143,11 +140,6 @@ fn status(c: *Cli, _: []const [:0]const u8) !Exit {
         return if (protected) .ok else .failed;
     }
 
-    if (foreign_ks) |name| {
-        try c.warn("另一套 kill-switch 正在管理网络 网卡 {s}", .{name});
-        try c.out.writeAll("    wslb 不会改动任何网络状态 两套同时运行会互相破坏\n");
-        return .ok;
-    }
     if (!lan.modeAllowsUplink(mode)) {
         try c.bad("WSL 网络模式是 {s} 需要 mirrored 不连节点", .{mode});
     }
@@ -432,16 +424,11 @@ fn readStdinAll(c: *Cli) ![]const u8 {
 
 const subscription_agent = "v2rayN/7.0";
 
-/// 订阅只经隧道下载 不管是 wslb 还是另一套 kill-switch 都不会用真实 IP
+/// 订阅只经隧道下载 不会用真实 IP
 fn fetchSubscription(c: *Cli, url: []const u8) ![]const u8 {
     if (!Control.alive()) {
-        const cfg = try loadConfig(c);
-        var sock = try netlink.Socket.open(0);
-        defer sock.close();
-        if (try Guard.foreignPresent(c.gpa, &sock, cfg) == null) {
-            try c.err.writeAll("隧道没有运行 先添加一个能用的节点再导入订阅\n");
-            return error.NoTunnel;
-        }
+        try c.err.writeAll("隧道没有运行 先添加一个能用的节点再导入订阅\n");
+        return error.NoTunnel;
     }
     // agent 刚更新时 sing-box 在重启 隧道要几秒才通
     var attempt: usize = 0;
@@ -662,9 +649,6 @@ fn listField(cfg: *Config, key: []const u8) ?*[]const []const u8 {
     if (std.mem.eql(u8, key, "exclude-ifaces")) {
         return &cfg.exclude_ifaces;
     }
-    if (std.mem.eql(u8, key, "foreign-ifaces")) {
-        return &cfg.foreign_ifaces;
-    }
     return null;
 }
 
@@ -676,7 +660,7 @@ fn config(c: *Cli, args: []const [:0]const u8) !Exit {
         return .ok;
     }
     if (args.len != 3) {
-        return c.usage("config show | set <键> <值> | add|remove <列表> <值>\n  键: uplink 网卡名或 auto  lan-cidr lan-gateway 可设 none  remote-dns mixed-port singbox health-interval health-timeout health-failures\n  列表: local-cidrs exclude-cidrs exclude-ifaces foreign-ifaces  set 时用逗号分隔整体替换");
+        return c.usage("config show | set <键> <值> | add|remove <列表> <值>\n  键: uplink 网卡名或 auto  lan-cidr lan-gateway 可设 none  remote-dns mixed-port singbox health-interval health-timeout health-failures\n  列表: local-cidrs exclude-cidrs exclude-ifaces  set 时用逗号分隔整体替换");
     }
     if (!c.requireRoot()) {
         return .failed;
@@ -730,7 +714,7 @@ fn config(c: *Cli, args: []const [:0]const u8) !Exit {
             return c.fail("未知配置键 {s}", .{key});
         }
     } else if (std.mem.eql(u8, sub, "add") or std.mem.eql(u8, sub, "remove")) {
-        const field = listField(&cfg, key) orelse return c.fail("未知列表 {s} 可用 local-cidrs exclude-cidrs exclude-ifaces foreign-ifaces", .{key});
+        const field = listField(&cfg, key) orelse return c.fail("未知列表 {s} 可用 local-cidrs exclude-cidrs exclude-ifaces", .{key});
         if (std.mem.endsWith(u8, key, "-cidrs")) {
             _ = ip4.Cidr.parse(val) catch return c.fail("不是有效网段: {s}", .{val});
         }
@@ -795,13 +779,6 @@ fn leaktest(c: *Cli, _: []const [:0]const u8) !Exit {
         try c.out.writeAll("已暂停 sing-box 直连公网\n");
         try c.io.sleep(.fromSeconds(2), .awake);
     } else {
-        const cfg = try loadConfig(c);
-        var sock = try netlink.Socket.open(0);
-        defer sock.close();
-        if (try Guard.foreignPresent(c.gpa, &sock, cfg)) |name| {
-            try c.warn("网络由另一套 kill-switch {s} 管理 探测会经它的隧道连通 这里的结果没有意义", .{name});
-            return .ok;
-        }
         try c.out.writeAll("守护进程未运行 直接探测\n");
     }
     try c.out.flush();
@@ -874,14 +851,13 @@ fn restart(c: *Cli, _: []const [:0]const u8) !Exit {
     if (try hold.ensureGuard(c.io, c.paths, c.envp)) {
         try c.ok("已用新的 agent 拉起守护进程", .{});
     } else {
-        try c.warn("没有拉起守护进程 已停用或由另一套 kill-switch 管理", .{});
+        try c.warn("没有拉起守护进程 已被 disable 停用", .{});
     }
     return .ok;
 }
 
 fn guard(c: *Cli, _: []const [:0]const u8) !Exit {
     Guard.run(c.gpa, c.io, c.env) catch |err| switch (err) {
-        error.ForeignKillswitch => return c.fail("另一套 kill-switch 正在管理网络 拒绝启动", .{}),
         error.Impostor => return c.fail("控制套接字被非 root 进程占用 拒绝启动 网络保持阻断", .{}),
         error.AlreadyRunning => return .ok,
         else => return err,
@@ -904,10 +880,7 @@ fn holdCmd(c: *Cli, _: []const [:0]const u8) !Exit {
 }
 
 fn firewallUp(c: *Cli, _: []const [:0]const u8) !Exit {
-    Guard.firewallUp(c.gpa, c.io, c.env) catch |err| switch (err) {
-        error.ForeignKillswitch => return c.fail("另一套 kill-switch 正在管理网络 不做改动", .{}),
-        else => return err,
-    };
+    try Guard.firewallUp(c.gpa, c.io, c.env);
     return .ok;
 }
 

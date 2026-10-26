@@ -31,31 +31,25 @@ pub fn draw(app: *App, s: *Screen) usize {
         _ = s.print(2, y, .bad, "{s} 读不到状态 {s}", .{ Screen.glyph.cross, info.net_error });
         return y + 1;
     };
-    if (st.foreign_killswitch.len != 0) {
-        _ = s.print(2, y, .warn, "{s} 另一套 kill-switch {s} 正在管理网络", .{ Screen.glyph.warn, st.foreign_killswitch });
-        _ = s.put(4, y + 1, "wslb 不改动网络 新建的发行版仍受它保护", .muted);
-        y += 3;
+    _ = s.mark(2, y, if (st.protected) .ok else .bad, if (st.protected) "已受保护 直连会被阻断" else "未受保护");
+    y += 1;
+    var cx: usize = 4;
+    cx = s.mark(cx, y, if (st.guard) .ok else .bad, "守护进程") + 3;
+    cx = s.mark(cx, y, if (std.mem.eql(u8, st.firewall, "guard")) .ok else .bad, "防火墙") + 3;
+    cx = s.mark(cx, y, if (st.blackhole) .ok else .bad, "黑洞路由") + 3;
+    _ = s.mark(cx, y, if (st.tun) .ok else .bad, "隧道网卡");
+    y += 1;
+    var buf: [96]u8 = undefined;
+    if (st.paused) {
+        _ = s.mark(4, y, .warn, "sing-box 已暂停");
+    } else if (st.health_failures != 0) {
+        _ = s.mark(4, y, .bad, std.fmt.bufPrint(&buf, "隧道探测连续失败 {d} 次 已自动重启 {d} 次", .{ st.health_failures, st.health_restarts }) catch "");
+    } else if (st.health_ok_age_s >= 0) {
+        _ = s.mark(4, y, .ok, std.fmt.bufPrint(&buf, "隧道 {d} 秒前探测通过", .{st.health_ok_age_s}) catch "");
     } else {
-        _ = s.mark(2, y, if (st.protected) .ok else .bad, if (st.protected) "已受保护 直连会被阻断" else "未受保护");
-        y += 1;
-        var cx: usize = 4;
-        cx = s.mark(cx, y, if (st.guard) .ok else .bad, "守护进程") + 3;
-        cx = s.mark(cx, y, if (std.mem.eql(u8, st.firewall, "guard")) .ok else .bad, "防火墙") + 3;
-        cx = s.mark(cx, y, if (st.blackhole) .ok else .bad, "黑洞路由") + 3;
-        _ = s.mark(cx, y, if (st.tun) .ok else .bad, "隧道网卡");
-        y += 1;
-        var buf: [96]u8 = undefined;
-        if (st.paused) {
-            _ = s.mark(4, y, .warn, "sing-box 已暂停");
-        } else if (st.health_failures != 0) {
-            _ = s.mark(4, y, .bad, std.fmt.bufPrint(&buf, "隧道探测连续失败 {d} 次 已自动重启 {d} 次", .{ st.health_failures, st.health_restarts }) catch "");
-        } else if (st.health_ok_age_s >= 0) {
-            _ = s.mark(4, y, .ok, std.fmt.bufPrint(&buf, "隧道 {d} 秒前探测通过", .{st.health_ok_age_s}) catch "");
-        } else {
-            _ = s.mark(4, y, .none, "隧道尚未探测");
-        }
-        y += 2;
+        _ = s.mark(4, y, .none, "隧道尚未探测");
     }
+    y += 2;
     if (!Env.modeAllowsUplink(st)) {
         y = drawNotMirrored(info, s, y, st.network_mode);
     }
@@ -108,7 +102,6 @@ pub fn items(app: *App, a: std.mem.Allocator) ![]const Menu.Item {
         try list.append(a, .{ .label = "安装网络发行版", .desc = "导入 wslb-net 约 100MB 并打开开机自动连接", .run = openInstallForm });
         return list.items;
     };
-    const foreign = if (app.info.net) |st| st.foreign_killswitch.len != 0 else false;
     var active: []const u8 = if (app.info.net) |st| st.node_name else "";
     if (active.len == 0) {
         active = "未设置";
@@ -136,9 +129,7 @@ pub fn items(app: *App, a: std.mem.Allocator) ![]const Menu.Item {
         .{ .label = "网络规则", .desc = "直连网段 排除网卡 隧道内 DNS 健康探测", .run = openRules },
         .{ .label = "出口检查", .desc = "查询现在的出口 IP 与地区", .run = runCheck },
     });
-    if (!foreign) {
-        try list.append(a, .{ .label = "泄露测试", .desc = "暂停 sing-box 确认直连被拒", .run = runLeaktest });
-    }
+    try list.append(a, .{ .label = "泄露测试", .desc = "暂停 sing-box 确认直连被拒", .run = runLeaktest });
     try list.append(a, .{ .label = "开机自动连接", .note = auto_text, .note_style = auto_style, .desc = "登录 Windows 时在后台启动网络发行版", .run = toggleAutostart });
     if (installed.state != .running) {
         try list.append(a, .{ .label = "启动网络发行版", .desc = "现在在后台启动并保持运行", .run = runHold });
@@ -152,9 +143,6 @@ pub fn items(app: *App, a: std.mem.Allocator) ![]const Menu.Item {
             .desc = "换成 wslb.exe 自带的版本 防火墙与黑洞保留",
             .run = runUpgrade,
         });
-    }
-    if (foreign) {
-        return list.items;
     }
     try list.append(a, .{ .label = "重启网络服务", .desc = "重启守护进程和 sing-box 防火墙与黑洞一直保留", .run = runRestart });
     if (st.guard) {

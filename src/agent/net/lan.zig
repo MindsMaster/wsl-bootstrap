@@ -112,11 +112,6 @@ pub fn excluded(cfg: Config, snap: *const Snapshot, index: u32) bool {
     if (proxyTun(snap, index)) {
         return true;
     }
-    for (cfg.foreign_ifaces) |f| {
-        if (std.mem.eql(u8, name, f)) {
-            return true;
-        }
-    }
     for (cfg.exclude_ifaces) |pat| {
         if (glob(pat, name)) {
             return true;
@@ -285,16 +280,6 @@ pub fn detect(gpa: Allocator, cfg: Config, snap: *const Snapshot, node_ip: ?ip4.
     for (snap.links) |*link| {
         if (!excluded(cfg, snap, link.index) and inLan(snap, l, link.index)) {
             return .of(link, gw, 0);
-        }
-    }
-    return null;
-}
-
-/// 同一 VM 里另一套 kill-switch 的网卡 两套同时改路由会互相破坏
-pub fn foreign(cfg: Config, snap: *const Snapshot) ?[]const u8 {
-    for (cfg.foreign_ifaces) |name| {
-        if (snap.linkByName(name) != null) {
-            return name;
         }
     }
     return null;

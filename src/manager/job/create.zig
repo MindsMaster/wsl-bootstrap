@@ -74,7 +74,7 @@ test "create flow commands" {
         .gpa = std.testing.allocator,
         .replies = &.{
             .{ .prefix = "wsl.exe --list", .result = .{ .code = 0, .stdout = "NAME STATE VERSION\n wslb-net Running 2\n", .stderr = "" } },
-            .{ .prefix = "wsl.exe -d wslb-net -u root --exec /usr/local/bin/wslb-agent status --json", .result = .{ .code = 0, .stdout = "{\"protected\":true,\"foreign_killswitch\":\"seattle0\",\"guard\":false}", .stderr = "" } },
+            .{ .prefix = "wsl.exe -d wslb-net -u root --exec /usr/local/bin/wslb-agent status --json", .result = .{ .code = 0, .stdout = "{\"protected\":true,\"guard\":true}", .stderr = "" } },
         },
     };
     defer rec.deinit();

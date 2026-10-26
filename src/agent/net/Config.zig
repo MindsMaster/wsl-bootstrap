@@ -23,8 +23,6 @@ exclude_cidrs: []const []const u8 = &.{ "26.0.0.0/8", "25.0.0.0/8" },
 exclude_ifaces: []const []const u8 = &.{ "docker*", "br-*", "veth*", "zt*", "tailscale*", "wg*" },
 /// 不进隧道 也被防火墙放行的目的网段
 local_cidrs: []const []const u8 = &.{ "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16" },
-/// 另一套 kill-switch 的网卡 存在时本程序拒绝改动网络
-foreign_ifaces: []const []const u8 = &.{ "seattle0", "seattle-null" },
 remote_dns: []const u8 = "8.8.8.8",
 mixed_port: u16 = 41080,
 singbox: []const u8 = "/usr/local/lib/wslb/sing-box",

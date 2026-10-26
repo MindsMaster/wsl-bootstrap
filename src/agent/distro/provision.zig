@@ -27,30 +27,17 @@ pub const Options = struct {
     hide_claude: bool = false,
 };
 
-pub const Protection = union(enum) {
-    guard,
-    foreign: []const u8,
-};
-
-/// 联网前确认流量不会直连 守护进程在或者另一套 kill-switch 在
-pub fn protection(gpa: std.mem.Allocator) !Protection {
-    if (Control.alive()) {
-        return .guard;
+/// 联网前确认流量不会直连
+pub fn protection() !void {
+    if (!Control.alive()) {
+        return error.Unprotected;
     }
-    var sock = try netlink.Socket.open(0);
-    defer sock.close();
-    if (try Guard.foreignPresent(gpa, &sock, .{})) |name| {
-        return .{ .foreign = name };
-    }
-    return error.Unprotected;
 }
 
 pub fn run(ctx: *Ctx, opts: Options) !void {
     ctx.step("检查网络防护", .{});
-    switch (try protection(ctx.gpa)) {
-        .guard => ctx.ok("网络发行版的守护进程在运行", .{}),
-        .foreign => |name| ctx.ok("由另一套 kill-switch {s} 保护", .{name}),
-    }
+    try protection();
+    ctx.ok("网络发行版的守护进程在运行", .{});
     ctx.ok("发行版 {s}", .{ctx.os.id});
 
     const user = try ensureUser(ctx, opts);

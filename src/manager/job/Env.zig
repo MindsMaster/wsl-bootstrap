@@ -20,7 +20,6 @@ netdistro: []const u8,
 pub const NetStatus = struct {
     version: []const u8 = "",
     protected: bool = false,
-    foreign_killswitch: []const u8 = "",
     guard: bool = false,
     firewall: []const u8 = "",
     blackhole: bool = false,
@@ -100,16 +99,12 @@ pub fn nodeList(env: Env) ![]NodeEntry {
     return std.json.parseFromSliceLeaky([]NodeEntry, env.arena, r.stdout, .{ .ignore_unknown_fields = true });
 }
 
-/// 联网之前必须确认 VM 已受保护 守护进程在或者另一套 kill-switch 在
+/// 联网之前必须确认 VM 已受保护 守护进程在
 pub fn requireProtected(env: Env, log: *Log) !void {
     const st = (try env.netStatus()) orelse {
         log.add("网络发行版未安装 先在网络页安装 它负责确认整个 WSL 的网络已受保护");
         return error.NetDistroMissing;
     };
-    if (st.foreign_killswitch.len != 0) {
-        log.print("网络由另一套 kill-switch {s} 保护", .{st.foreign_killswitch});
-        return;
-    }
     if (!st.protected or !st.guard) {
         log.add("网络未受保护 守护进程未运行 拒绝联网操作");
         return error.Unprotected;
